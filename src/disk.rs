@@ -2,9 +2,8 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::Network;
 use chrono::Utc;
 use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringDecayParameters};
-use lightning::util::hash_tables::new_hash_map;
 use lightning::util::logger::{Logger, Record};
-use lightning::util::ser::{Readable, ReadableArgs, Writer};
+use lightning::util::ser::{ReadableArgs, Writer};
 use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
@@ -14,14 +13,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::error::APIError;
-use crate::ldk::{NetworkGraph, OutputSpenderTxes};
+use crate::ldk::NetworkGraph;
 use crate::utils::{parse_peer_info, LOGS_DIR};
 
 pub(crate) const LDK_LOGS_FILE: &str = "logs.txt";
 
 pub(crate) const CHANNEL_PEER_DATA: &str = "channel_peer_data";
-
-pub(crate) const OUTPUT_SPENDER_TXES: &str = "output_spender_txes";
 
 pub(crate) struct FilesystemLogger {
     data_dir: PathBuf,
@@ -143,15 +140,6 @@ pub(crate) fn read_network(
         }
     }
     NetworkGraph::new(network, logger)
-}
-
-pub(crate) fn read_output_spender_txes(path: &Path) -> OutputSpenderTxes {
-    if let Ok(file) = File::open(path) {
-        if let Ok(info) = OutputSpenderTxes::read(&mut BufReader::new(file)) {
-            return info;
-        }
-    }
-    new_hash_map()
 }
 
 pub(crate) fn read_scorer(
