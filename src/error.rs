@@ -531,6 +531,7 @@ pub enum AppError {
     InvalidAuthenticationArgs,
 
     #[error("The revoked tokens file contains an invalid entry")]
+    #[allow(dead_code)]
     InvalidRevokedTokensFile,
 
     #[error("The provided root public key is invalid")]

@@ -92,7 +92,7 @@ use tokio::task::JoinHandle;
 
 use crate::bitcoind::BitcoindClient;
 use crate::database::RlnDatabase;
-use crate::disk::{self, FilesystemLogger, CHANNEL_PEER_DATA, OUTPUT_SPENDER_TXES};
+use crate::disk::{self, FilesystemLogger, CHANNEL_PEER_DATA};
 
 const INBOUND_PAYMENTS_KEY: &str = "inbound_payments";
 const OUTBOUND_PAYMENTS_KEY: &str = "outbound_payments";

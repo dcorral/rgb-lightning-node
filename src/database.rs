@@ -1,5 +1,10 @@
+use std::collections::HashSet;
+
 use futures::executor::block_on;
-use rln_entity::{ConfigActMod, ConfigEntity, DbMnemonic, DbMnemonicActMod, MnemonicEntity};
+use rln_entity::{
+    ConfigActMod, ConfigEntity, DbMnemonic, DbMnemonicActMod, MnemonicEntity, RevokedTokenActMod,
+    RevokedTokenEntity,
+};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ActiveValue, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 
@@ -96,5 +101,44 @@ impl RlnDatabase {
         .map_err(|e| std::io::Error::other(format!("Database write failed: {e}")))?;
 
         Ok(())
+    }
+
+    /// Add a revoked token ID to the database.
+    pub fn add_revoked_token(&self, token_id_hex: &str) -> Result<(), APIError> {
+        let now = crate::utils::get_current_timestamp() as i64;
+
+        let token = RevokedTokenActMod {
+            token_id: ActiveValue::Set(token_id_hex.to_string()),
+            revoked_at: ActiveValue::Set(now),
+        };
+
+        // Use on_conflict to ignore duplicates
+        block_on(
+            RevokedTokenEntity::insert(token)
+                .on_conflict(
+                    OnConflict::column(rln_entity::RevokedTokenColumn::TokenId)
+                        .do_nothing()
+                        .to_owned(),
+                )
+                .exec(self.get_connection()),
+        )
+        .map_err(|e| std::io::Error::other(format!("Database write failed: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Load all revoked token IDs from the database.
+    pub fn load_revoked_tokens(&self) -> Result<HashSet<Vec<u8>>, APIError> {
+        let results = block_on(RevokedTokenEntity::find().all(self.get_connection()))
+            .map_err(|e| std::io::Error::other(format!("Database query failed: {e}")))?;
+
+        let mut revoked = HashSet::new();
+        for record in results {
+            if let Some(token_bytes) = crate::utils::hex_str_to_vec(&record.token_id) {
+                revoked.insert(token_bytes);
+            }
+        }
+
+        Ok(revoked)
     }
 }
