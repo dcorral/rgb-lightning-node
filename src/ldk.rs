@@ -1,3 +1,4 @@
+use crate::kv_store::SeaOrmKvStore;
 use amplify::{map, s};
 use bitcoin::blockdata::locktime::absolute::LockTime;
 use bitcoin::psbt::{ExtractTxError, Psbt};
@@ -38,12 +39,14 @@ use lightning::sign::{
 use lightning::types::payment::{PaymentHash, PaymentPreimage};
 use lightning::util::config::UserConfig;
 use lightning::util::hash_tables::hash_map::Entry;
-use lightning::util::hash_tables::HashMap as LdkHashMap;
+use lightning::util::hash_tables::{new_hash_map, HashMap as LdkHashMap};
 use lightning::util::persist::{
-    KVStoreSync, MonitorUpdatingPersister, OUTPUT_SWEEPER_PERSISTENCE_KEY,
-    OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE, OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
+    KVStoreSync, KVStoreSyncWrapper, MonitorUpdatingPersister, CHANNEL_MANAGER_PERSISTENCE_KEY,
+    CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+    OUTPUT_SWEEPER_PERSISTENCE_KEY, OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
+    OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
-use lightning::util::ser::{ReadableArgs, Writeable};
+use lightning::util::ser::{Readable, ReadableArgs, Writeable};
 use lightning::util::sweep as ldk_sweep;
 use lightning::{chain, impl_writeable_tlv_based};
 use lightning_background_processor::{process_events_async, GossipSync, NO_LIQUIDITY_MANAGER};
@@ -55,7 +58,6 @@ use lightning_block_sync::UnboundedCache;
 use lightning_dns_resolver::OMDomainResolver;
 use lightning_invoice::PaymentSecret;
 use lightning_net_tokio::SocketDescriptor;
-use lightning_persister::fs_store::FilesystemStore;
 use rand::RngCore;
 use rgb_lib::{
     bdk_wallet::keys::{bip39::Mnemonic, DerivableKey, ExtendedKey},
@@ -78,7 +80,6 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io::BufReader;
 use std::net::ToSocketAddrs;
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
@@ -92,10 +93,13 @@ use tokio::sync::watch::Sender;
 use tokio::task::JoinHandle;
 
 use crate::bitcoind::BitcoindClient;
-use crate::disk::{
-    self, FilesystemLogger, CHANNEL_IDS_FNAME, CHANNEL_PEER_DATA, INBOUND_PAYMENTS_FNAME,
-    MAKER_SWAPS_FNAME, OUTBOUND_PAYMENTS_FNAME, OUTPUT_SPENDER_TXES, TAKER_SWAPS_FNAME,
-};
+use crate::disk::{self, FilesystemLogger, CHANNEL_PEER_DATA, OUTPUT_SPENDER_TXES};
+
+const INBOUND_PAYMENTS_KEY: &str = "inbound_payments";
+const OUTBOUND_PAYMENTS_KEY: &str = "outbound_payments";
+const CHANNEL_IDS_KEY: &str = "channel_ids";
+const MAKER_SWAPS_KEY: &str = "maker_swaps";
+const TAKER_SWAPS_KEY: &str = "taker_swaps";
 use crate::error::APIError;
 use crate::rgb::{check_rgb_proxy_endpoint, get_rgb_channel_info_optional, RgbLibWalletWrapper};
 use crate::routes::{HTLCStatus, SwapStatus, UnlockRequest, DUST_LIMIT_MSAT};
@@ -221,14 +225,14 @@ impl UnlockedAppState {
     }
 
     fn save_maker_swaps(&self, swaps: MutexGuard<SwapMap>) {
-        self.fs_store
-            .write("", "", MAKER_SWAPS_FNAME, swaps.encode())
+        self.kv_store
+            .write("", "", MAKER_SWAPS_KEY, swaps.encode())
             .unwrap();
     }
 
     fn save_taker_swaps(&self, swaps: MutexGuard<SwapMap>) {
-        self.fs_store
-            .write("", "", TAKER_SWAPS_FNAME, swaps.encode())
+        self.kv_store
+            .write("", "", TAKER_SWAPS_KEY, swaps.encode())
             .unwrap();
     }
 
@@ -292,14 +296,14 @@ impl UnlockedAppState {
     }
 
     fn save_inbound_payments(&self, inbound: MutexGuard<InboundPaymentInfoStorage>) {
-        self.fs_store
-            .write("", "", INBOUND_PAYMENTS_FNAME, inbound.encode())
+        self.kv_store
+            .write("", "", INBOUND_PAYMENTS_KEY, inbound.encode())
             .unwrap();
     }
 
     fn save_outbound_payments(&self, outbound: MutexGuard<OutboundPaymentInfoStorage>) {
-        self.fs_store
-            .write("", "", OUTBOUND_PAYMENTS_FNAME, outbound.encode())
+        self.kv_store
+            .write("", "", OUTBOUND_PAYMENTS_KEY, outbound.encode())
             .unwrap();
     }
 
@@ -397,8 +401,8 @@ impl UnlockedAppState {
     }
 
     fn save_channel_ids_map(&self, channel_ids: MutexGuard<ChannelIdsMap>) {
-        self.fs_store
-            .write("", "", CHANNEL_IDS_FNAME, channel_ids.encode())
+        self.kv_store
+            .write("", "", CHANNEL_IDS_KEY, channel_ids.encode())
             .unwrap();
     }
 }
@@ -411,7 +415,7 @@ pub(crate) type ChainMonitor = chainmonitor::ChainMonitor<
     Arc<FilesystemLogger>,
     Arc<
         MonitorUpdatingPersister<
-            Arc<FilesystemStore>,
+            Arc<SeaOrmKvStore>,
             Arc<FilesystemLogger>,
             Arc<KeysManager>,
             Arc<KeysManager>,
@@ -480,7 +484,7 @@ pub(crate) struct RgbOutputSpender {
     static_state: Arc<StaticState>,
     rgb_wallet_wrapper: Arc<RgbLibWalletWrapper>,
     keys_manager: Arc<KeysManager>,
-    fs_store: Arc<FilesystemStore>,
+    kv_store: Arc<SeaOrmKvStore>,
     txes: Arc<Mutex<OutputSpenderTxes>>,
     proxy_endpoint: String,
 }
@@ -490,7 +494,7 @@ pub(crate) type OutputSweeper = ldk_sweep::OutputSweeper<
     Arc<RgbLibWalletWrapper>,
     Arc<BitcoindClient>,
     Arc<dyn Filter + Send + Sync>,
-    Arc<FilesystemStore>,
+    KVStoreSyncWrapper<Arc<SeaOrmKvStore>>,
     Arc<FilesystemLogger>,
     Arc<RgbOutputSpender>,
 >;
@@ -1489,7 +1493,7 @@ impl OutputSpender for RgbOutputSpender {
         }
 
         txes.insert(descriptors_hash, spending_tx.clone());
-        self.fs_store
+        self.kv_store
             .write("", "", OUTPUT_SPENDER_TXES, txes.encode())
             .unwrap();
 
@@ -1616,10 +1620,12 @@ pub(crate) async fn start_ldk(
         ldk_data_dir_path.clone(),
     ));
 
-    // Initialize Persistence
-    let fs_store = Arc::new(FilesystemStore::new(ldk_data_dir.clone()));
+    // Initialize Persistence using shared database connection
+    let kv_store = Arc::new(SeaOrmKvStore::from_connection(Arc::clone(
+        &static_state.database,
+    )));
     let persister = Arc::new(MonitorUpdatingPersister::new(
-        Arc::clone(&fs_store),
+        Arc::clone(&kv_store),
         Arc::clone(&logger),
         1000,
         Arc::clone(&keys_manager),
@@ -1687,52 +1693,62 @@ pub(crate) async fn start_ldk(
     user_config.manually_accept_inbound_channels = true;
     let mut restarting_node = true;
     let (channel_manager_blockhash, channel_manager) = {
-        if let Ok(f) = fs::File::open(ldk_data_dir.join("manager")) {
-            let mut channel_monitor_references = Vec::new();
-            for (_, channel_monitor) in channelmonitors.iter() {
-                channel_monitor_references.push(channel_monitor);
+        match kv_store.read(
+            CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+            CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE,
+            CHANNEL_MANAGER_PERSISTENCE_KEY,
+        ) {
+            Ok(bytes) => {
+                let mut channel_monitor_references = Vec::new();
+                for (_, channel_monitor) in channelmonitors.iter() {
+                    channel_monitor_references.push(channel_monitor);
+                }
+                let read_args = ChannelManagerReadArgs::new(
+                    keys_manager.clone(),
+                    keys_manager.clone(),
+                    keys_manager.clone(),
+                    fee_estimator.clone(),
+                    chain_monitor.clone(),
+                    broadcaster.clone(),
+                    router.clone(),
+                    Arc::clone(&message_router),
+                    logger.clone(),
+                    user_config,
+                    channel_monitor_references,
+                    ldk_data_dir_path.clone(),
+                );
+                <(BlockHash, ChannelManager)>::read(&mut &bytes[..], read_args).unwrap()
             }
-            let read_args = ChannelManagerReadArgs::new(
-                keys_manager.clone(),
-                keys_manager.clone(),
-                keys_manager.clone(),
-                fee_estimator.clone(),
-                chain_monitor.clone(),
-                broadcaster.clone(),
-                router.clone(),
-                Arc::clone(&message_router),
-                logger.clone(),
-                user_config,
-                channel_monitor_references,
-                ldk_data_dir_path.clone(),
-            );
-            <(BlockHash, ChannelManager)>::read(&mut BufReader::new(f), read_args).unwrap()
-        } else {
-            // We're starting a fresh node.
-            restarting_node = false;
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                // We're starting a fresh node.
+                restarting_node = false;
 
-            let polled_best_block = polled_chain_tip.to_best_block();
-            let polled_best_block_hash = polled_best_block.block_hash;
-            let chain_params = ChainParameters {
-                network,
-                best_block: polled_best_block,
-            };
-            let fresh_channel_manager = channelmanager::ChannelManager::new(
-                fee_estimator.clone(),
-                chain_monitor.clone(),
-                broadcaster.clone(),
-                router.clone(),
-                Arc::clone(&message_router),
-                logger.clone(),
-                keys_manager.clone(),
-                keys_manager.clone(),
-                keys_manager.clone(),
-                user_config,
-                chain_params,
-                cur.as_secs() as u32,
-                ldk_data_dir_path.clone(),
-            );
-            (polled_best_block_hash, fresh_channel_manager)
+                let polled_best_block = polled_chain_tip.to_best_block();
+                let polled_best_block_hash = polled_best_block.block_hash;
+                let chain_params = ChainParameters {
+                    network,
+                    best_block: polled_best_block,
+                };
+                let fresh_channel_manager = channelmanager::ChannelManager::new(
+                    fee_estimator.clone(),
+                    chain_monitor.clone(),
+                    broadcaster.clone(),
+                    router.clone(),
+                    Arc::clone(&message_router),
+                    logger.clone(),
+                    keys_manager.clone(),
+                    keys_manager.clone(),
+                    keys_manager.clone(),
+                    user_config,
+                    chain_params,
+                    cur.as_secs() as u32,
+                    ldk_data_dir_path.clone(),
+                );
+                (polled_best_block_hash, fresh_channel_manager)
+            }
+            Err(e) => {
+                panic!("Failed to read channel manager from KVStore: {e}");
+            }
         }
     };
 
@@ -1805,11 +1821,11 @@ pub(crate) async fn start_ldk(
         static_state: static_state.clone(),
         rgb_wallet_wrapper: rgb_wallet_wrapper.clone(),
         keys_manager: keys_manager.clone(),
-        fs_store: fs_store.clone(),
+        kv_store: kv_store.clone(),
         txes,
         proxy_endpoint: proxy_endpoint.to_string(),
     });
-    let (sweeper_best_block, output_sweeper) = match fs_store.read(
+    let (sweeper_best_block, output_sweeper) = match kv_store.read(
         OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
         OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
         OUTPUT_SWEEPER_PERSISTENCE_KEY,
@@ -1822,7 +1838,7 @@ pub(crate) async fn start_ldk(
                 None,
                 rgb_output_spender,
                 rgb_wallet_wrapper.clone(),
-                fs_store.clone(),
+                KVStoreSyncWrapper(kv_store.clone()),
                 logger.clone(),
             );
             (channel_manager.current_best_block(), sweeper)
@@ -1834,7 +1850,7 @@ pub(crate) async fn start_ldk(
                 None,
                 rgb_output_spender.clone(),
                 rgb_wallet_wrapper.clone(),
-                fs_store.clone(),
+                KVStoreSyncWrapper(kv_store.clone()),
                 logger.clone(),
             );
             let mut reader = io::Cursor::new(&mut bytes);
@@ -2029,12 +2045,31 @@ pub(crate) async fn start_ldk(
         }
     });
 
-    let inbound_payments = Arc::new(Mutex::new(disk::read_inbound_payment_info(
-        &ldk_data_dir.join(INBOUND_PAYMENTS_FNAME),
-    )));
-    let outbound_payments = Arc::new(Mutex::new(disk::read_outbound_payment_info(
-        &ldk_data_dir.join(OUTBOUND_PAYMENTS_FNAME),
-    )));
+    // Read payment info from KVStore
+    let inbound_payments = Arc::new(Mutex::new({
+        match kv_store.read("", "", INBOUND_PAYMENTS_KEY) {
+            Ok(bytes) => InboundPaymentInfoStorage::read(&mut &bytes[..]).unwrap_or_else(|_| {
+                InboundPaymentInfoStorage {
+                    payments: new_hash_map(),
+                }
+            }),
+            Err(_) => InboundPaymentInfoStorage {
+                payments: new_hash_map(),
+            },
+        }
+    }));
+    let outbound_payments = Arc::new(Mutex::new({
+        match kv_store.read("", "", OUTBOUND_PAYMENTS_KEY) {
+            Ok(bytes) => OutboundPaymentInfoStorage::read(&mut &bytes[..]).unwrap_or_else(|_| {
+                OutboundPaymentInfoStorage {
+                    payments: new_hash_map(),
+                }
+            }),
+            Err(_) => OutboundPaymentInfoStorage {
+                payments: new_hash_map(),
+            },
+        }
+    }));
 
     let bump_tx_event_handler = Arc::new(BumpTransactionEventHandler::new(
         Arc::clone(&broadcaster),
@@ -2044,20 +2079,41 @@ pub(crate) async fn start_ldk(
     ));
 
     // Persist ChannelManager and NetworkGraph
-    let persister = Arc::new(FilesystemStore::new(ldk_data_dir_path.clone()));
+    let persister = KVStoreSyncWrapper(Arc::clone(&kv_store));
 
-    // Read swaps info
-    let maker_swaps = Arc::new(Mutex::new(disk::read_swaps_info(
-        &ldk_data_dir.join(MAKER_SWAPS_FNAME),
-    )));
-    let taker_swaps = Arc::new(Mutex::new(disk::read_swaps_info(
-        &ldk_data_dir.join(TAKER_SWAPS_FNAME),
-    )));
+    // Read swaps info from KVStore
+    let maker_swaps = Arc::new(Mutex::new({
+        match kv_store.read("", "", MAKER_SWAPS_KEY) {
+            Ok(bytes) => SwapMap::read(&mut &bytes[..]).unwrap_or_else(|_| SwapMap {
+                swaps: new_hash_map(),
+            }),
+            Err(_) => SwapMap {
+                swaps: new_hash_map(),
+            },
+        }
+    }));
+    let taker_swaps = Arc::new(Mutex::new({
+        match kv_store.read("", "", TAKER_SWAPS_KEY) {
+            Ok(bytes) => SwapMap::read(&mut &bytes[..]).unwrap_or_else(|_| SwapMap {
+                swaps: new_hash_map(),
+            }),
+            Err(_) => SwapMap {
+                swaps: new_hash_map(),
+            },
+        }
+    }));
 
-    // Read channel IDs info
-    let channel_ids_map = Arc::new(Mutex::new(disk::read_channel_ids_info(
-        &ldk_data_dir.join(CHANNEL_IDS_FNAME),
-    )));
+    // Read channel IDs info from KVStore
+    let channel_ids_map = Arc::new(Mutex::new({
+        match kv_store.read("", "", CHANNEL_IDS_KEY) {
+            Ok(bytes) => ChannelIdsMap::read(&mut &bytes[..]).unwrap_or_else(|_| ChannelIdsMap {
+                channel_ids: new_hash_map(),
+            }),
+            Err(_) => ChannelIdsMap {
+                channel_ids: new_hash_map(),
+            },
+        }
+    }));
 
     let unlocked_state = Arc::new(UnlockedAppState {
         channel_manager: Arc::clone(&channel_manager),
@@ -2068,7 +2124,7 @@ pub(crate) async fn start_ldk(
         onion_messenger: onion_messenger.clone(),
         outbound_payments,
         peer_manager: Arc::clone(&peer_manager),
-        fs_store: Arc::clone(&fs_store),
+        kv_store: Arc::clone(&kv_store),
         bump_tx_event_handler,
         rgb_wallet_wrapper,
         maker_swaps,

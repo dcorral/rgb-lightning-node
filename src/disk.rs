@@ -14,25 +14,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::error::APIError;
-use crate::ldk::{
-    ChannelIdsMap, InboundPaymentInfoStorage, NetworkGraph, OutboundPaymentInfoStorage,
-    OutputSpenderTxes, SwapMap,
-};
+use crate::ldk::{NetworkGraph, OutputSpenderTxes};
 use crate::utils::{parse_peer_info, LOGS_DIR};
 
 pub(crate) const LDK_LOGS_FILE: &str = "logs.txt";
 
-pub(crate) const INBOUND_PAYMENTS_FNAME: &str = "inbound_payments";
-pub(crate) const OUTBOUND_PAYMENTS_FNAME: &str = "outbound_payments";
-
 pub(crate) const CHANNEL_PEER_DATA: &str = "channel_peer_data";
 
 pub(crate) const OUTPUT_SPENDER_TXES: &str = "output_spender_txes";
-
-pub(crate) const CHANNEL_IDS_FNAME: &str = "channel_ids";
-
-pub(crate) const MAKER_SWAPS_FNAME: &str = "maker_swaps";
-pub(crate) const TAKER_SWAPS_FNAME: &str = "taker_swaps";
 
 pub(crate) struct FilesystemLogger {
     data_dir: PathBuf,
@@ -156,28 +145,6 @@ pub(crate) fn read_network(
     NetworkGraph::new(network, logger)
 }
 
-pub(crate) fn read_inbound_payment_info(path: &Path) -> InboundPaymentInfoStorage {
-    if let Ok(file) = File::open(path) {
-        if let Ok(info) = InboundPaymentInfoStorage::read(&mut BufReader::new(file)) {
-            return info;
-        }
-    }
-    InboundPaymentInfoStorage {
-        payments: new_hash_map(),
-    }
-}
-
-pub(crate) fn read_outbound_payment_info(path: &Path) -> OutboundPaymentInfoStorage {
-    if let Ok(file) = File::open(path) {
-        if let Ok(info) = OutboundPaymentInfoStorage::read(&mut BufReader::new(file)) {
-            return info;
-        }
-    }
-    OutboundPaymentInfoStorage {
-        payments: new_hash_map(),
-    }
-}
-
 pub(crate) fn read_output_spender_txes(path: &Path) -> OutputSpenderTxes {
     if let Ok(file) = File::open(path) {
         if let Ok(info) = OutputSpenderTxes::read(&mut BufReader::new(file)) {
@@ -185,17 +152,6 @@ pub(crate) fn read_output_spender_txes(path: &Path) -> OutputSpenderTxes {
         }
     }
     new_hash_map()
-}
-
-pub(crate) fn read_swaps_info(path: &Path) -> SwapMap {
-    if let Ok(file) = File::open(path) {
-        if let Ok(info) = SwapMap::read(&mut BufReader::new(file)) {
-            return info;
-        }
-    }
-    SwapMap {
-        swaps: new_hash_map(),
-    }
 }
 
 pub(crate) fn read_scorer(
@@ -211,15 +167,4 @@ pub(crate) fn read_scorer(
         }
     }
     ProbabilisticScorer::new(params, graph, logger)
-}
-
-pub(crate) fn read_channel_ids_info(path: &Path) -> ChannelIdsMap {
-    if let Ok(file) = File::open(path) {
-        if let Ok(info) = ChannelIdsMap::read(&mut BufReader::new(file)) {
-            return info;
-        }
-    }
-    ChannelIdsMap {
-        channel_ids: new_hash_map(),
-    }
 }
