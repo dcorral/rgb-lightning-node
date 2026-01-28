@@ -1,8 +1,6 @@
-use crate::kv_store::SeaOrmKvStore;
 use amplify::s;
 use bitcoin::io;
 use bitcoin::secp256k1::PublicKey;
-use futures::executor::block_on;
 use futures::Future;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::types::ChannelId;
@@ -15,10 +13,9 @@ use lightning::{
     sign::KeysManager,
     util::ser::{Writeable, Writer},
 };
+use lightning_persister::fs_store::FilesystemStore;
 use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use rgb_lib::{bdk_wallet::keys::bip39::Mnemonic, BitcoinNetwork, ContractId};
-use rln_migration::{Migrator, MigratorTrait};
-use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 use std::{
     collections::HashSet,
     fmt::Write,
@@ -92,8 +89,6 @@ pub(crate) struct StaticState {
     pub(crate) ldk_data_dir: PathBuf,
     pub(crate) logger: Arc<FilesystemLogger>,
     pub(crate) max_media_upload_size_mb: u16,
-    /// Shared database connection for mnemonic storage and LDK KVStore
-    pub(crate) database: Arc<DatabaseConnection>,
 }
 
 pub(crate) struct UnlockedAppState {
@@ -105,7 +100,7 @@ pub(crate) struct UnlockedAppState {
     pub(crate) onion_messenger: Arc<OnionMessenger>,
     pub(crate) outbound_payments: Arc<Mutex<OutboundPaymentInfoStorage>>,
     pub(crate) peer_manager: Arc<PeerManager>,
-    pub(crate) kv_store: Arc<SeaOrmKvStore>,
+    pub(crate) fs_store: Arc<FilesystemStore>,
     pub(crate) bump_tx_event_handler: Arc<BumpTxEventHandler>,
     pub(crate) maker_swaps: Arc<Mutex<SwapMap>>,
     pub(crate) taker_swaps: Arc<Mutex<SwapMap>>,
@@ -160,8 +155,8 @@ impl Writeable for UserOnionMessageContents {
     }
 }
 
-pub(crate) fn check_already_initialized(database: &DatabaseConnection) -> Result<(), APIError> {
-    let db = crate::database::RlnDatabase::from_connection(database.clone());
+pub(crate) fn check_already_initialized(storage_dir_path: &Path) -> Result<(), APIError> {
+    let db = crate::database::RlnDatabase::new(&get_db_path(storage_dir_path))?;
     if db.mnemonic_exists()? {
         return Err(APIError::AlreadyInitialized);
     }
@@ -179,9 +174,9 @@ pub(crate) fn check_password_strength(password: String) -> Result<(), APIError> 
 
 pub(crate) fn check_password_validity(
     password: &str,
-    database: &DatabaseConnection,
+    storage_dir_path: &Path,
 ) -> Result<Mnemonic, APIError> {
-    let db = crate::database::RlnDatabase::from_connection(database.clone());
+    let db = crate::database::RlnDatabase::new(&get_db_path(storage_dir_path))?;
     if let Some(mnemonic_record) = db.get_mnemonic()? {
         let mcrypt = new_magic_crypt!(password, 256);
         let mnemonic_str = mcrypt
@@ -218,11 +213,11 @@ pub(crate) fn get_db_path(storage_dir_path: &Path) -> PathBuf {
 pub(crate) fn encrypt_and_save_mnemonic(
     password: String,
     mnemonic: String,
-    database: &DatabaseConnection,
+    storage_dir_path: &Path,
 ) -> Result<(), APIError> {
     let mcrypt = new_magic_crypt!(password, 256);
     let encrypted_mnemonic = mcrypt.encrypt_str_to_base64(mnemonic);
-    let db = crate::database::RlnDatabase::from_connection(database.clone());
+    let db = crate::database::RlnDatabase::new(&get_db_path(storage_dir_path))?;
     db.save_mnemonic(encrypted_mnemonic)?;
     tracing::info!("Saved wallet mnemonic");
     Ok(())
@@ -349,28 +344,6 @@ pub(crate) async fn start_daemon(args: &UserArgs) -> Result<Arc<AppState>, AppEr
     let ldk_data_dir = args.storage_dir_path.join(LDK_DIR);
     let logger = Arc::new(FilesystemLogger::new(ldk_data_dir.clone()));
 
-    // Initialize the shared database connection
-    let db_path = get_db_path(&args.storage_dir_path);
-    let connection_string = format!("sqlite:{}?mode=rwc", db_path.display());
-    let mut opt = ConnectOptions::new(connection_string);
-    // Use single connection to avoid deadlocks
-    opt.max_connections(1)
-        .min_connections(0)
-        .connect_timeout(Duration::from_secs(8))
-        .idle_timeout(Duration::from_secs(8))
-        .max_lifetime(Duration::from_secs(8));
-
-    let database = block_on(Database::connect(opt)).map_err(|e| {
-        AppError::IO(std::io::Error::other(format!(
-            "Database connection failed: {e}"
-        )))
-    })?;
-
-    block_on(Migrator::up(&database, None))
-        .map_err(|e| AppError::IO(std::io::Error::other(format!("Migration failed: {e}"))))?;
-
-    tracing::info!(db_path = %db_path.display(), "Shared database initialized");
-
     let cancel_token = CancellationToken::new();
 
     let static_state = Arc::new(StaticState {
@@ -380,7 +353,6 @@ pub(crate) async fn start_daemon(args: &UserArgs) -> Result<Arc<AppState>, AppEr
         ldk_data_dir,
         logger,
         max_media_upload_size_mb: args.max_media_upload_size_mb,
-        database: Arc::new(database),
     });
 
     let app_state = Arc::new(AppState {

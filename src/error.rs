@@ -73,7 +73,6 @@ pub enum APIError {
     FailedIssuingAsset(String),
 
     #[error("Unable to create keys seed file {0}: {1}")]
-    #[allow(dead_code)]
     FailedKeysCreation(String, String),
 
     #[error("Failed to open channel: {0}")]

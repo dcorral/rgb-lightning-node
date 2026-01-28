@@ -1,6 +1,10 @@
+use std::path::Path;
+use std::time::Duration;
+
 use futures::executor::block_on;
 use rln_entity::{DbMnemonic, DbMnemonicActMod, MnemonicEntity};
-use sea_orm::{ActiveValue, DatabaseConnection, EntityTrait};
+use rln_migration::{Migrator, MigratorTrait};
+use sea_orm::{ActiveValue, ConnectOptions, Database, DatabaseConnection, EntityTrait};
 
 use crate::error::APIError;
 
@@ -9,10 +13,61 @@ pub struct RlnDatabase {
 }
 
 impl RlnDatabase {
-    /// Create an RlnDatabase wrapper from an existing connection.
-    /// Does NOT run migrations (assumes they were already run).
-    pub fn from_connection(connection: DatabaseConnection) -> Self {
-        Self { connection }
+    /// Initialize the database connection and run migrations.
+    /// This function uses block_on internally so should NOT be called from an async context.
+    /// Use `new_async` for async contexts or wrap this in `spawn_blocking`.
+    pub fn new(db_path: &Path) -> Result<Self, APIError> {
+        let connection_string = format!("sqlite:{}?mode=rwc", db_path.display());
+        let mut opt = ConnectOptions::new(connection_string);
+        // Use single connection to avoid deadlocks
+        opt.max_connections(1)
+            .min_connections(0)
+            .connect_timeout(Duration::from_secs(8))
+            .idle_timeout(Duration::from_secs(8))
+            .max_lifetime(Duration::from_secs(8));
+
+        let connection = block_on(Database::connect(opt)).map_err(|e| {
+            APIError::FailedKeysCreation(
+                db_path.to_string_lossy().to_string(),
+                format!("Database connection failed: {e}"),
+            )
+        })?;
+
+        block_on(Migrator::up(&connection, None)).map_err(|e| {
+            APIError::FailedKeysCreation(
+                db_path.to_string_lossy().to_string(),
+                format!("Migration failed: {e}"),
+            )
+        })?;
+
+        Ok(Self { connection })
+    }
+
+    /// Initialize the database connection and run migrations asynchronously.
+    pub async fn new_async(db_path: &Path) -> Result<Self, APIError> {
+        let connection_string = format!("sqlite:{}?mode=rwc", db_path.display());
+        let mut opt = ConnectOptions::new(connection_string);
+        opt.max_connections(1)
+            .min_connections(0)
+            .connect_timeout(Duration::from_secs(8))
+            .idle_timeout(Duration::from_secs(8))
+            .max_lifetime(Duration::from_secs(8));
+
+        let connection = Database::connect(opt).await.map_err(|e| {
+            APIError::FailedKeysCreation(
+                db_path.to_string_lossy().to_string(),
+                format!("Database connection failed: {e}"),
+            )
+        })?;
+
+        Migrator::up(&connection, None).await.map_err(|e| {
+            APIError::FailedKeysCreation(
+                db_path.to_string_lossy().to_string(),
+                format!("Migration failed: {e}"),
+            )
+        })?;
+
+        Ok(Self { connection })
     }
 
     pub fn get_connection(&self) -> &DatabaseConnection {
