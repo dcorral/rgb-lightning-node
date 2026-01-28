@@ -5,6 +5,7 @@ mod bitcoind;
 mod database;
 mod disk;
 mod error;
+mod kv_store;
 mod ldk;
 mod rgb;
 mod routes;
