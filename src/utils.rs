@@ -19,7 +19,6 @@ use rgb_lib::{bdk_wallet::keys::bip39::Mnemonic, BitcoinNetwork, ContractId};
 use std::{
     collections::HashSet,
     fmt::Write,
-    fs,
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::Path,
     path::PathBuf,
@@ -156,8 +155,9 @@ impl Writeable for UserOnionMessageContents {
     }
 }
 
-pub(crate) fn check_already_initialized(mnemonic_path: &Path) -> Result<(), APIError> {
-    if mnemonic_path.exists() {
+pub(crate) fn check_already_initialized(storage_dir_path: &Path) -> Result<(), APIError> {
+    let db = crate::database::RlnDatabase::new(&get_db_path(storage_dir_path))?;
+    if db.mnemonic_exists()? {
         return Err(APIError::AlreadyInitialized);
     }
     Ok(())
@@ -176,11 +176,11 @@ pub(crate) fn check_password_validity(
     password: &str,
     storage_dir_path: &Path,
 ) -> Result<Mnemonic, APIError> {
-    let mnemonic_path = get_mnemonic_path(storage_dir_path);
-    if let Ok(encrypted_mnemonic) = fs::read_to_string(mnemonic_path) {
+    let db = crate::database::RlnDatabase::new(&get_db_path(storage_dir_path))?;
+    if let Some(mnemonic_record) = db.get_mnemonic()? {
         let mcrypt = new_magic_crypt!(password, 256);
         let mnemonic_str = mcrypt
-            .decrypt_base64_to_string(encrypted_mnemonic)
+            .decrypt_base64_to_string(mnemonic_record.encrypted_mnemonic)
             .map_err(|_| APIError::WrongPassword)?;
         Ok(Mnemonic::from_str(&mnemonic_str).expect("valid mnemonic"))
     } else {
@@ -206,27 +206,21 @@ pub(crate) fn check_port_is_available(port: u16) -> Result<(), AppError> {
     Ok(())
 }
 
-pub(crate) fn get_mnemonic_path(storage_dir_path: &Path) -> PathBuf {
-    storage_dir_path.join("mnemonic")
+pub(crate) fn get_db_path(storage_dir_path: &Path) -> PathBuf {
+    storage_dir_path.join("rln_db")
 }
 
 pub(crate) fn encrypt_and_save_mnemonic(
     password: String,
     mnemonic: String,
-    mnemonic_path: &Path,
+    storage_dir_path: &Path,
 ) -> Result<(), APIError> {
     let mcrypt = new_magic_crypt!(password, 256);
     let encrypted_mnemonic = mcrypt.encrypt_str_to_base64(mnemonic);
-    match fs::write(mnemonic_path, encrypted_mnemonic) {
-        Ok(()) => {
-            tracing::info!("Created a new wallet");
-            Ok(())
-        }
-        Err(e) => Err(APIError::FailedKeysCreation(
-            mnemonic_path.to_string_lossy().to_string(),
-            e.to_string(),
-        )),
-    }
+    let db = crate::database::RlnDatabase::new(&get_db_path(storage_dir_path))?;
+    db.save_mnemonic(encrypted_mnemonic)?;
+    tracing::info!("Saved wallet mnemonic");
+    Ok(())
 }
 
 pub(crate) async fn connect_peer_if_necessary(

@@ -4182,7 +4182,10 @@ dependencies = [
  "regex",
  "reqwest",
  "rgb-lib",
+ "rln-entity",
+ "rln-migration",
  "scrypt",
+ "sea-orm",
  "serde",
  "serde_json",
  "serial_test",
@@ -4281,6 +4284,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bd124222d17ad93a644ed9d011a40f4fb64aa54275c08cc216524a9ea82fb09f"
 dependencies = [
  "digest 0.10.7",
+]
+
+[[package]]
+name = "rln-entity"
+version = "0.1.0"
+dependencies = [
+ "sea-orm",
+]
+
+[[package]]
+name = "rln-migration"
+version = "0.1.0"
+dependencies = [
+ "async-std",
+ "sea-orm-migration",
 ]
 
 [[package]]

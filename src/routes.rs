@@ -78,7 +78,7 @@ use crate::ldk::{start_ldk, stop_ldk, LdkBackgroundServices, MIN_CHANNEL_CONFIRM
 use crate::swap::{SwapData, SwapInfo, SwapString};
 use crate::utils::{
     check_already_initialized, check_channel_id, check_password_strength, check_password_validity,
-    encrypt_and_save_mnemonic, get_max_local_rgb_amount, get_mnemonic_path, get_route, hex_str,
+    encrypt_and_save_mnemonic, get_max_local_rgb_amount, get_route, hex_str,
     hex_str_to_compressed_pubkey, hex_str_to_vec, UnlockedAppState, UserOnionMessageContents,
 };
 use crate::{
@@ -1393,7 +1393,7 @@ pub(crate) async fn change_password(
         encrypt_and_save_mnemonic(
             payload.new_password,
             mnemonic.to_string(),
-            &get_mnemonic_path(&state.static_state.storage_dir_path),
+            &state.static_state.storage_dir_path,
         )?;
 
         Ok(Json(EmptyResponse {}))
@@ -1724,14 +1724,13 @@ pub(crate) async fn init(
 
         check_password_strength(payload.password.clone())?;
 
-        let mnemonic_path = get_mnemonic_path(&state.static_state.storage_dir_path);
-        check_already_initialized(&mnemonic_path)?;
+        check_already_initialized(&state.static_state.storage_dir_path)?;
 
         let keys = generate_keys(state.static_state.network);
 
         let mnemonic = keys.mnemonic;
 
-        encrypt_and_save_mnemonic(payload.password, mnemonic.clone(), &mnemonic_path)?;
+        encrypt_and_save_mnemonic(payload.password, mnemonic.clone(), &state.static_state.storage_dir_path)?;
 
         Ok(Json(InitResponse { mnemonic }))
     })
@@ -3283,8 +3282,7 @@ pub(crate) async fn restore(
     no_cancel(async move {
         let _unlocked_state = state.check_locked().await?;
 
-        let mnemonic_path = get_mnemonic_path(&state.static_state.storage_dir_path);
-        check_already_initialized(&mnemonic_path)?;
+        check_already_initialized(&state.static_state.storage_dir_path)?;
 
         restore_backup(
             Path::new(&payload.backup_path),

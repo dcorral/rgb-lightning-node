@@ -1,0 +1,16 @@
+[package]
+name = "rln-entity"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "rln_entity"
+path = "src/lib.rs"
+
+[dependencies]
+sea-orm = { version = "1.1.12", default-features = false, features = [
+    "macros",
+    "runtime-async-std-rustls",
+    "sqlx-sqlite",
+] }
