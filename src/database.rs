@@ -1,6 +1,7 @@
 use futures::executor::block_on;
-use rln_entity::{DbMnemonic, DbMnemonicActMod, MnemonicEntity};
-use sea_orm::{ActiveValue, DatabaseConnection, EntityTrait};
+use rln_entity::{ConfigActMod, ConfigEntity, DbMnemonic, DbMnemonicActMod, MnemonicEntity};
+use sea_orm::sea_query::OnConflict;
+use sea_orm::{ActiveValue, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 
 use crate::error::APIError;
 
@@ -54,6 +55,46 @@ impl RlnDatabase {
             block_on(MnemonicEntity::insert(mnemonic).exec(self.get_connection()))
                 .map_err(|e| std::io::Error::other(format!("Database insert failed: {e}")))?;
         }
+        Ok(())
+    }
+
+    /// Get a config value by key.
+    pub fn get_config(&self, key: &str) -> Result<Option<String>, APIError> {
+        let result = block_on(
+            ConfigEntity::find()
+                .filter(rln_entity::ConfigColumn::Key.eq(key))
+                .one(self.get_connection()),
+        )
+        .map_err(|e| std::io::Error::other(format!("Database query failed: {e}")))?;
+
+        Ok(result.map(|r| r.value))
+    }
+
+    /// Set a config value. Uses UPSERT for atomic insert/update.
+    pub fn set_config(&self, key: &str, value: &str) -> Result<(), APIError> {
+        let now = crate::utils::get_current_timestamp() as i64;
+
+        let config = ConfigActMod {
+            key: ActiveValue::Set(key.to_string()),
+            value: ActiveValue::Set(value.to_string()),
+            created_at: ActiveValue::Set(now),
+            updated_at: ActiveValue::Set(now),
+        };
+
+        block_on(
+            ConfigEntity::insert(config)
+                .on_conflict(
+                    OnConflict::column(rln_entity::ConfigColumn::Key)
+                        .update_columns([
+                            rln_entity::ConfigColumn::Value,
+                            rln_entity::ConfigColumn::UpdatedAt,
+                        ])
+                        .to_owned(),
+                )
+                .exec(self.get_connection()),
+        )
+        .map_err(|e| std::io::Error::other(format!("Database write failed: {e}")))?;
+
         Ok(())
     }
 }

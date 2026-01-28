@@ -2,6 +2,7 @@ pub use sea_orm_migration::prelude::*;
 
 mod m20250127_000001_create_mnemonic_table;
 mod m20250128_000001_create_kv_store_table;
+mod m20250128_000002_create_config_table;
 
 pub struct Migrator;
 
@@ -11,6 +12,7 @@ impl MigratorTrait for Migrator {
         vec![
             Box::new(m20250127_000001_create_mnemonic_table::Migration),
             Box::new(m20250128_000001_create_kv_store_table::Migration),
+            Box::new(m20250128_000002_create_config_table::Migration),
         ]
     }
 }
