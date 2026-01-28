@@ -1,8 +1,14 @@
+pub mod channel_peer;
 pub mod config;
 pub mod kv_store;
 pub mod mnemonic;
 pub mod prelude;
+pub mod revoked_token;
 
+pub use channel_peer::{
+    ActiveModel as ChannelPeerActMod, Column as ChannelPeerColumn, Entity as ChannelPeerEntity,
+    Model as DbChannelPeer,
+};
 pub use config::{
     ActiveModel as ConfigActMod, Column as ConfigColumn, Entity as ConfigEntity,
     Model as DbConfig,
@@ -14,4 +20,8 @@ pub use kv_store::{
 pub use mnemonic::{
     ActiveModel as DbMnemonicActMod, Column as MnemonicColumn, Entity as MnemonicEntity,
     Model as DbMnemonic,
+};
+pub use revoked_token::{
+    ActiveModel as RevokedTokenActMod, Column as RevokedTokenColumn,
+    Entity as RevokedTokenEntity, Model as DbRevokedToken,
 };
