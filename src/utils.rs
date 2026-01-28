@@ -1,3 +1,4 @@
+use crate::kv_store::SeaOrmKvStore;
 use amplify::s;
 use bitcoin::io;
 use bitcoin::secp256k1::PublicKey;
@@ -14,11 +15,10 @@ use lightning::{
     sign::KeysManager,
     util::ser::{Writeable, Writer},
 };
-use crate::kv_store::SeaOrmKvStore;
 use magic_crypt::{new_magic_crypt, MagicCryptTrait};
+use rgb_lib::{bdk_wallet::keys::bip39::Mnemonic, BitcoinNetwork, ContractId};
 use rln_migration::{Migrator, MigratorTrait};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
-use rgb_lib::{bdk_wallet::keys::bip39::Mnemonic, BitcoinNetwork, ContractId};
 use std::{
     collections::HashSet,
     fmt::Write,
@@ -366,9 +366,8 @@ pub(crate) async fn start_daemon(args: &UserArgs) -> Result<Arc<AppState>, AppEr
         )))
     })?;
 
-    block_on(Migrator::up(&database, None)).map_err(|e| {
-        AppError::IO(std::io::Error::other(format!("Migration failed: {e}")))
-    })?;
+    block_on(Migrator::up(&database, None))
+        .map_err(|e| AppError::IO(std::io::Error::other(format!("Migration failed: {e}"))))?;
 
     tracing::info!(db_path = %db_path.display(), "Shared database initialized");
 

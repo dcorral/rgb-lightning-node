@@ -1340,8 +1340,7 @@ pub(crate) async fn backup(
     no_cancel(async move {
         let _guard = state.check_locked().await?;
 
-        let _mnemonic =
-            check_password_validity(&payload.password, &state.static_state.database)?;
+        let _mnemonic = check_password_validity(&payload.password, &state.static_state.database)?;
 
         do_backup(
             &state.static_state.storage_dir_path,
@@ -1730,7 +1729,11 @@ pub(crate) async fn init(
 
         let mnemonic = keys.mnemonic;
 
-        encrypt_and_save_mnemonic(payload.password, mnemonic.clone(), &state.static_state.database)?;
+        encrypt_and_save_mnemonic(
+            payload.password,
+            mnemonic.clone(),
+            &state.static_state.database,
+        )?;
 
         Ok(Json(InitResponse { mnemonic }))
     })
@@ -3290,8 +3293,7 @@ pub(crate) async fn restore(
             &state.static_state.storage_dir_path,
         )?;
 
-        let _mnemonic =
-            check_password_validity(&payload.password, &state.static_state.database)?;
+        let _mnemonic = check_password_validity(&payload.password, &state.static_state.database)?;
 
         Ok(Json(EmptyResponse {}))
     })
@@ -3749,16 +3751,14 @@ pub(crate) async fn unlock(
             }
         }
 
-        let mnemonic = match check_password_validity(
-            &payload.password,
-            &state.static_state.database,
-        ) {
-            Ok(mnemonic) => mnemonic,
-            Err(e) => {
-                state.update_changing_state(false);
-                return Err(e);
-            }
-        };
+        let mnemonic =
+            match check_password_validity(&payload.password, &state.static_state.database) {
+                Ok(mnemonic) => mnemonic,
+                Err(e) => {
+                    state.update_changing_state(false);
+                    return Err(e);
+                }
+            };
 
         tracing::debug!("Starting LDK...");
         let (new_ldk_background_services, new_unlocked_app_state) =
