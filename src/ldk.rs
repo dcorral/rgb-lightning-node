@@ -93,13 +93,15 @@ use tokio::sync::watch::Sender;
 use tokio::task::JoinHandle;
 
 use crate::bitcoind::BitcoindClient;
-use crate::disk::{self, FilesystemLogger, CHANNEL_PEER_DATA, OUTPUT_SPENDER_TXES};
+use crate::disk::{self, FilesystemLogger, CHANNEL_PEER_DATA};
 
+// KVStore keys for data persisted in the database
 const INBOUND_PAYMENTS_KEY: &str = "inbound_payments";
 const OUTBOUND_PAYMENTS_KEY: &str = "outbound_payments";
 const CHANNEL_IDS_KEY: &str = "channel_ids";
 const MAKER_SWAPS_KEY: &str = "maker_swaps";
 const TAKER_SWAPS_KEY: &str = "taker_swaps";
+const OUTPUT_SPENDER_TXES_KEY: &str = "output_spender_txes";
 use crate::error::APIError;
 use crate::rgb::{check_rgb_proxy_endpoint, get_rgb_channel_info_optional, RgbLibWalletWrapper};
 use crate::routes::{HTLCStatus, SwapStatus, UnlockRequest, DUST_LIMIT_MSAT};
@@ -1494,7 +1496,7 @@ impl OutputSpender for RgbOutputSpender {
 
         txes.insert(descriptors_hash, spending_tx.clone());
         self.kv_store
-            .write("", "", OUTPUT_SPENDER_TXES, txes.encode())
+            .write("", "", OUTPUT_SPENDER_TXES_KEY, txes.encode())
             .unwrap();
 
         Ok(spending_tx)
@@ -1814,9 +1816,12 @@ pub(crate) async fn start_ldk(
     ));
 
     // Initialize the OutputSweeper.
-    let txes = Arc::new(Mutex::new(disk::read_output_spender_txes(
-        &ldk_data_dir.join(OUTPUT_SPENDER_TXES),
-    )));
+    let txes: OutputSpenderTxes = match kv_store.read("", "", OUTPUT_SPENDER_TXES_KEY) {
+        Ok(bytes) => OutputSpenderTxes::read(&mut &bytes[..]).unwrap_or_else(|_| new_hash_map()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => new_hash_map(),
+        Err(e) => panic!("Failed to read output spender txes from KVStore: {e}"),
+    };
+    let txes = Arc::new(Mutex::new(txes));
     let rgb_output_spender = Arc::new(RgbOutputSpender {
         static_state: static_state.clone(),
         rgb_wallet_wrapper: rgb_wallet_wrapper.clone(),
