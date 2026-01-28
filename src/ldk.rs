@@ -102,6 +102,7 @@ const CHANNEL_IDS_KEY: &str = "channel_ids";
 const MAKER_SWAPS_KEY: &str = "maker_swaps";
 const TAKER_SWAPS_KEY: &str = "taker_swaps";
 const OUTPUT_SPENDER_TXES_KEY: &str = "output_spender_txes";
+const PSBT_NAMESPACE: &str = "psbt";
 use crate::error::APIError;
 use crate::rgb::{check_rgb_proxy_endpoint, get_rgb_channel_info_optional, RgbLibWalletWrapper};
 use crate::routes::{HTLCStatus, SwapStatus, UnlockRequest, DUST_LIMIT_MSAT};
@@ -610,10 +611,11 @@ async fn handle_ldk_events(
             let funding_txid = funding_tx.compute_txid().to_string();
             tracing::info!("Funding TXID: {funding_txid}");
 
-            let psbt_path = static_state
-                .ldk_data_dir
-                .join(format!("psbt_{funding_txid}"));
-            fs::write(psbt_path, psbt.to_string()).unwrap();
+            // Store PSBT in database for later use when channel is funded
+            unlocked_state
+                .kv_store
+                .write(PSBT_NAMESPACE, "", &funding_txid, psbt.to_string().into_bytes())
+                .unwrap();
 
             if let Some(asset_id) = asset_id {
                 let unlocked_state_copy = unlocked_state.clone();
@@ -1017,52 +1019,54 @@ async fn handle_ldk_events(
             unlocked_state.add_channel_id(former_temporary_channel_id.unwrap(), channel_id);
 
             let funding_txid = funding_txo.txid.to_string();
-            let psbt_path = static_state
-                .ldk_data_dir
-                .join(format!("psbt_{funding_txid}"));
 
-            if psbt_path.exists() {
-                let psbt_str = fs::read_to_string(psbt_path).unwrap();
+            // Check if we have a stored PSBT (initiator case)
+            match unlocked_state.kv_store.read(PSBT_NAMESPACE, "", &funding_txid) {
+                Ok(psbt_bytes) => {
+                    let psbt_str = String::from_utf8(psbt_bytes).unwrap();
 
-                let state_copy = unlocked_state.clone();
-                let psbt_str_copy = psbt_str.clone();
+                    let state_copy = unlocked_state.clone();
+                    let psbt_str_copy = psbt_str.clone();
 
-                let is_chan_colored =
-                    is_channel_rgb(&channel_id, &PathBuf::from(&static_state.ldk_data_dir));
-                tracing::info!("Initiator of the channel (colored: {})", is_chan_colored);
+                    let is_chan_colored =
+                        is_channel_rgb(&channel_id, &PathBuf::from(&static_state.ldk_data_dir));
+                    tracing::info!("Initiator of the channel (colored: {})", is_chan_colored);
 
-                let _txid = tokio::task::spawn_blocking(move || {
-                    if is_chan_colored {
-                        state_copy.rgb_send_end(psbt_str_copy).map(|r| r.txid)
-                    } else {
-                        state_copy.rgb_send_btc_end(psbt_str_copy)
+                    let _txid = tokio::task::spawn_blocking(move || {
+                        if is_chan_colored {
+                            state_copy.rgb_send_end(psbt_str_copy).map(|r| r.txid)
+                        } else {
+                            state_copy.rgb_send_btc_end(psbt_str_copy)
+                        }
+                    })
+                    .await
+                    .unwrap()
+                    .map_err(|e| {
+                        tracing::error!("Error completing channel opening: {e:?}");
+                        ReplayEvent()
+                    })?;
+
+                    *unlocked_state.rgb_send_lock.lock().unwrap() = false;
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    // acceptor
+                    let consignment_path = static_state
+                        .ldk_data_dir
+                        .join(format!("consignment_{funding_txid}"));
+                    if !consignment_path.exists() {
+                        // vanilla channel
+                        return Ok(());
                     }
-                })
-                .await
-                .unwrap()
-                .map_err(|e| {
-                    tracing::error!("Error completing channel opening: {e:?}");
-                    ReplayEvent()
-                })?;
+                    let consignment =
+                        RgbTransfer::load_file(consignment_path).expect("successful consignment load");
 
-                *unlocked_state.rgb_send_lock.lock().unwrap() = false;
-            } else {
-                // acceptor
-                let consignment_path = static_state
-                    .ldk_data_dir
-                    .join(format!("consignment_{funding_txid}"));
-                if !consignment_path.exists() {
-                    // vanilla channel
-                    return Ok(());
+                    match unlocked_state.rgb_save_new_asset(consignment, funding_txid) {
+                        Ok(_) => {}
+                        Err(e) if e.to_string().contains("UNIQUE constraint failed") => {}
+                        Err(e) => panic!("Failed saving asset: {e}"),
+                    }
                 }
-                let consignment =
-                    RgbTransfer::load_file(consignment_path).expect("successful consignment load");
-
-                match unlocked_state.rgb_save_new_asset(consignment, funding_txid) {
-                    Ok(_) => {}
-                    Err(e) if e.to_string().contains("UNIQUE constraint failed") => {}
-                    Err(e) => panic!("Failed saving asset: {e}"),
-                }
+                Err(e) => panic!("Failed to read PSBT from KVStore: {e}"),
             }
         }
         Event::ChannelReady {
