@@ -92,7 +92,7 @@ use tokio::task::JoinHandle;
 
 use crate::bitcoind::BitcoindClient;
 use crate::database::RlnDatabase;
-use crate::disk::{self, FilesystemLogger, CHANNEL_PEER_DATA};
+use crate::disk::{self, FilesystemLogger};
 
 const INBOUND_PAYMENTS_KEY: &str = "inbound_payments";
 const OUTBOUND_PAYMENTS_KEY: &str = "outbound_payments";
@@ -2263,14 +2263,15 @@ pub(crate) async fn start_ldk(
     // Regularly reconnect to channel peers.
     let connect_cm = Arc::clone(&channel_manager);
     let connect_pm = Arc::clone(&peer_manager);
-    let peer_data_path = ldk_data_dir.join(CHANNEL_PEER_DATA);
+    let connect_db = Arc::clone(&static_state.database);
     let stop_connect = Arc::clone(&stop_processing);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            match disk::read_channel_peer_data(&peer_data_path) {
+            let db = RlnDatabase::from_connection((*connect_db).clone());
+            match db.read_channel_peer_data() {
                 Ok(info) => {
                     for node_id in connect_cm
                         .list_channels()
@@ -2291,7 +2292,7 @@ pub(crate) async fn start_ldk(
                     }
                 }
                 Err(e) => tracing::error!(
-                    "ERROR: errored reading channel peer info from disk: {:?}",
+                    "ERROR: errored reading channel peer info from database: {:?}",
                     e
                 ),
             }

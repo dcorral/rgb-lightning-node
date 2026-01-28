@@ -1,12 +1,15 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
+use std::str::FromStr;
 
+use bitcoin::secp256k1::PublicKey;
 use futures::executor::block_on;
 use rln_entity::{
-    ConfigActMod, ConfigEntity, DbMnemonic, DbMnemonicActMod, MnemonicEntity, RevokedTokenActMod,
-    RevokedTokenEntity,
+    ChannelPeerActMod, ChannelPeerEntity, ConfigActMod, ConfigEntity, DbMnemonic, DbMnemonicActMod,
+    MnemonicEntity, RevokedTokenActMod, RevokedTokenEntity,
 };
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{ActiveValue, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{ActiveValue, ColumnTrait, DatabaseConnection, EntityTrait, ModelTrait, QueryFilter};
 
 use crate::error::APIError;
 
@@ -140,5 +143,66 @@ impl RlnDatabase {
         }
 
         Ok(revoked)
+    }
+
+    pub fn persist_channel_peer(
+        &self,
+        pubkey: &PublicKey,
+        address: &SocketAddr,
+    ) -> Result<(), APIError> {
+        let now = crate::utils::get_current_timestamp() as i64;
+
+        let peer = ChannelPeerActMod {
+            pubkey: ActiveValue::Set(pubkey.to_string()),
+            address: ActiveValue::Set(address.to_string()),
+            created_at: ActiveValue::Set(now),
+        };
+
+        block_on(
+            ChannelPeerEntity::insert(peer)
+                .on_conflict(
+                    OnConflict::column(rln_entity::ChannelPeerColumn::Pubkey)
+                        .update_column(rln_entity::ChannelPeerColumn::Address)
+                        .to_owned(),
+                )
+                .exec(self.get_connection()),
+        )
+        .map_err(|e| std::io::Error::other(format!("Database write failed: {e}")))?;
+
+        tracing::info!("persisted peer (pubkey: {pubkey}, addr: {address})");
+        Ok(())
+    }
+
+    pub fn delete_channel_peer(&self, pubkey: &str) -> Result<(), APIError> {
+        let result = block_on(
+            ChannelPeerEntity::find()
+                .filter(rln_entity::ChannelPeerColumn::Pubkey.eq(pubkey))
+                .one(self.get_connection()),
+        )
+        .map_err(|e| std::io::Error::other(format!("Database query failed: {e}")))?;
+
+        if let Some(peer) = result {
+            block_on(peer.delete(self.get_connection()))
+                .map_err(|e| std::io::Error::other(format!("Database delete failed: {e}")))?;
+        }
+
+        Ok(())
+    }
+
+    pub fn read_channel_peer_data(&self) -> Result<HashMap<PublicKey, SocketAddr>, APIError> {
+        let results = block_on(ChannelPeerEntity::find().all(self.get_connection()))
+            .map_err(|e| std::io::Error::other(format!("Database query failed: {e}")))?;
+
+        let mut peer_data = HashMap::new();
+        for record in results {
+            if let (Ok(pubkey), Ok(address)) = (
+                PublicKey::from_str(&record.pubkey),
+                SocketAddr::from_str(&record.address),
+            ) {
+                peer_data.insert(pubkey, address);
+            }
+        }
+
+        Ok(peer_data)
     }
 }
