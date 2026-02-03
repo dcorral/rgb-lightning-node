@@ -24,7 +24,7 @@ use lightning::onion_message::messenger::{
 };
 use lightning::rgb_utils::{
     get_rgb_channel_info_pending, is_channel_rgb, parse_rgb_payment_info, read_rgb_transfer_info,
-    update_rgb_channel_amount, RgbAssetSchema, STATIC_BLINDING,
+    update_rgb_channel_amount, STATIC_BLINDING,
 };
 use lightning::routing::gossip;
 use lightning::routing::gossip::{NodeId, P2PGossipSync};
@@ -618,11 +618,11 @@ async fn handle_ldk_events(
                 let channel_rgb_amount: u64 = rgb_info.local_rgb_amount;
                 let asset_id = rgb_info.contract_id.to_string();
                 let assignment = match rgb_info.schema {
-                    RgbAssetSchema::Nia | RgbAssetSchema::Cfa => {
+                    AssetSchema::Nia | AssetSchema::Cfa => {
                         Assignment::Fungible(channel_rgb_amount)
                     }
-                    RgbAssetSchema::Uda => Assignment::NonFungible,
-                    RgbAssetSchema::Ifa => todo!(),
+                    AssetSchema::Uda => Assignment::NonFungible,
+                    AssetSchema::Ifa => todo!(),
                 };
 
                 let recipient_id = recipient_id_from_script_buf(script_buf, static_state.network);

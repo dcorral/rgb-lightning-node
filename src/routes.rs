@@ -32,7 +32,7 @@ use lightning::{
 };
 use lightning::{
     ln::channelmanager::{PaymentId, RecipientOnionFields, Retry},
-    rgb_utils::{write_rgb_channel_info, write_rgb_payment_info_file, RgbAssetSchema, RgbInfo},
+    rgb_utils::{write_rgb_channel_info, write_rgb_payment_info_file, RgbInfo},
     routing::{
         gossip::NodeId,
         router::{PaymentParameters, RouteParameters},
@@ -3172,16 +3172,9 @@ pub(crate) async fn open_channel(
         tracing::info!("EVENT: initiated channel with peer {}", peer_pubkey);
 
         if let Some((contract_id, asset_amount)) = &colored_info {
-            // Convert from rgb_lib::AssetSchema to lightning::rgb_utils::RgbAssetSchema
-            let ldk_schema = match schema.unwrap() {
-                RgbLibAssetSchema::Nia => RgbAssetSchema::Nia,
-                RgbLibAssetSchema::Cfa => RgbAssetSchema::Cfa,
-                RgbLibAssetSchema::Uda => RgbAssetSchema::Uda,
-                RgbLibAssetSchema::Ifa => RgbAssetSchema::Ifa,
-            };
             let rgb_info = RgbInfo {
                 contract_id: *contract_id,
-                schema: ldk_schema,
+                schema: schema.unwrap(),
                 local_rgb_amount: *asset_amount,
                 remote_rgb_amount: 0,
             };
