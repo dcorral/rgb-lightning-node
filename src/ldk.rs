@@ -618,9 +618,7 @@ async fn handle_ldk_events(
                 let channel_rgb_amount: u64 = rgb_info.local_rgb_amount;
                 let asset_id = rgb_info.contract_id.to_string();
                 let assignment = match rgb_info.schema {
-                    AssetSchema::Nia | AssetSchema::Cfa => {
-                        Assignment::Fungible(channel_rgb_amount)
-                    }
+                    AssetSchema::Nia | AssetSchema::Cfa => Assignment::Fungible(channel_rgb_amount),
                     AssetSchema::Uda => Assignment::NonFungible,
                     AssetSchema::Ifa => todo!(),
                 };
