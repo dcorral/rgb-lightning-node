@@ -36,7 +36,7 @@ lightning-rapid-gossip-sync = { version = "0.2.0", path = "./rust-lightning/ligh
 magic-crypt = "4.0.1"
 rand = "0.8.5"
 regex = { version = "1.11", default-features = false }
-rgb-lib = { git = "https://github.com/dcorral/rgb-lib", rev = "d68cd67b77d0ffb00f13af894805c75d0a3e7cc4", features = [
+rgb-lib = { git = "https://github.com/dcorral/rgb-lib", branch = "bump-sea-orm-tokio-runtime", features = [
     "electrum",
     "esplora",
 ] }
@@ -75,7 +75,7 @@ tracing-test = "0.2.5"
 [patch.crates-io]
 lightning = { path = "./rust-lightning/lightning" }
 lightning-background-processor = { path = "./rust-lightning/lightning-background-processor"}
-rgb-lib = { git = "https://github.com/dcorral/rgb-lib", rev = "d68cd67b77d0ffb00f13af894805c75d0a3e7cc4" }
+rgb-lib = { git = "https://github.com/dcorral/rgb-lib", branch = "bump-sea-orm-tokio-runtime" }
 
 # RGB patches required by rgb-lib fork (bump-sea-orm-tokio-runtime branch)
 rgb-strict-encoding = { git = "https://github.com/rgb-protocol/rgb-strict-encoding", branch = "master" }

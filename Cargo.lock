@@ -3556,7 +3556,7 @@ dependencies = [
 [[package]]
 name = "rgb-lib"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/dcorral/rgb-lib?rev=d68cd67b77d0ffb00f13af894805c75d0a3e7cc4#d68cd67b77d0ffb00f13af894805c75d0a3e7cc4"
+source = "git+https://github.com/dcorral/rgb-lib?branch=bump-sea-orm-tokio-runtime#f04652ebf734e7be6ee1aa212ec5262fffc9a9d4"
 dependencies = [
  "amplify",
  "base64 0.22.1",
@@ -3597,7 +3597,7 @@ dependencies = [
 [[package]]
 name = "rgb-lib-migration"
 version = "0.3.0-beta.2"
-source = "git+https://github.com/dcorral/rgb-lib?rev=d68cd67b77d0ffb00f13af894805c75d0a3e7cc4#d68cd67b77d0ffb00f13af894805c75d0a3e7cc4"
+source = "git+https://github.com/dcorral/rgb-lib?branch=bump-sea-orm-tokio-runtime#f04652ebf734e7be6ee1aa212ec5262fffc9a9d4"
 dependencies = [
  "sea-orm-migration",
  "tokio",
