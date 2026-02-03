@@ -9,6 +9,7 @@ mod kv_store;
 mod ldk;
 mod rgb;
 mod routes;
+mod runtime;
 mod swap;
 mod utils;
 

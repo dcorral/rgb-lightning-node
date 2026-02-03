@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
+use crate::runtime::block_on;
 use bitcoin::io;
-use futures::executor::block_on;
 use lightning::util::persist::KVStoreSync;
 use sea_orm::sea_query::OnConflict;
 

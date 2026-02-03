@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::str::FromStr;
 
+use crate::runtime::block_on;
 use bitcoin::secp256k1::PublicKey;
-use futures::executor::block_on;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ActiveValue, ColumnTrait, DatabaseConnection, EntityTrait, ModelTrait, QueryFilter};
 

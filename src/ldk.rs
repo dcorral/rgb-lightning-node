@@ -24,7 +24,7 @@ use lightning::onion_message::messenger::{
 };
 use lightning::rgb_utils::{
     get_rgb_channel_info_pending, is_channel_rgb, parse_rgb_payment_info, read_rgb_transfer_info,
-    update_rgb_channel_amount, STATIC_BLINDING,
+    update_rgb_channel_amount, RgbAssetSchema, STATIC_BLINDING,
 };
 use lightning::routing::gossip;
 use lightning::routing::gossip::{NodeId, P2PGossipSync};
@@ -597,7 +597,9 @@ async fn handle_ldk_events(
                         bitcoin_bech32::constants::Network::Testnet
                     }
                     BitcoinNetwork::Regtest => bitcoin_bech32::constants::Network::Regtest,
-                    BitcoinNetwork::Signet => bitcoin_bech32::constants::Network::Signet,
+                    BitcoinNetwork::Signet | BitcoinNetwork::SignetCustom(_) => {
+                        bitcoin_bech32::constants::Network::Signet
+                    }
                 },
             )
             .expect("Lightning funding tx should always be to a SegWit output");
@@ -616,9 +618,11 @@ async fn handle_ldk_events(
                 let channel_rgb_amount: u64 = rgb_info.local_rgb_amount;
                 let asset_id = rgb_info.contract_id.to_string();
                 let assignment = match rgb_info.schema {
-                    AssetSchema::Nia | AssetSchema::Cfa => Assignment::Fungible(channel_rgb_amount),
-                    AssetSchema::Uda => Assignment::NonFungible,
-                    AssetSchema::Ifa => todo!(),
+                    RgbAssetSchema::Nia | RgbAssetSchema::Cfa => {
+                        Assignment::Fungible(channel_rgb_amount)
+                    }
+                    RgbAssetSchema::Uda => Assignment::NonFungible,
+                    RgbAssetSchema::Ifa => todo!(),
                 };
 
                 let recipient_id = recipient_id_from_script_buf(script_buf, static_state.network);
@@ -1603,7 +1607,7 @@ pub(crate) async fn start_ldk(
             BitcoinNetwork::Testnet => "test",
             BitcoinNetwork::Testnet4 => "testnet4",
             BitcoinNetwork::Regtest => "regtest",
-            BitcoinNetwork::Signet => "signet",
+            BitcoinNetwork::Signet | BitcoinNetwork::SignetCustom(_) => "signet",
         }
     {
         return Err(APIError::NetworkMismatch(bitcoind_chain, bitcoin_network));
@@ -1621,7 +1625,7 @@ pub(crate) async fn start_ldk(
         tracing::info!("Using the default indexer");
         match bitcoin_network {
             BitcoinNetwork::Regtest => ELECTRUM_URL_REGTEST,
-            BitcoinNetwork::Signet => ELECTRUM_URL_SIGNET,
+            BitcoinNetwork::Signet | BitcoinNetwork::SignetCustom(_) => ELECTRUM_URL_SIGNET,
             BitcoinNetwork::Testnet => ELECTRUM_URL_TESTNET,
             BitcoinNetwork::Testnet4 => ELECTRUM_URL_TESTNET4,
             BitcoinNetwork::Mainnet => ELECTRUM_URL_MAINNET,
@@ -1635,6 +1639,7 @@ pub(crate) async fn start_ldk(
         tracing::info!("Using the default proxy");
         match bitcoin_network {
             BitcoinNetwork::Signet
+            | BitcoinNetwork::SignetCustom(_)
             | BitcoinNetwork::Testnet
             | BitcoinNetwork::Testnet4
             | BitcoinNetwork::Mainnet => PROXY_ENDPOINT_PUBLIC,

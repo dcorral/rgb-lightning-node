@@ -9,13 +9,13 @@ name = "rln_migration"
 path = "src/lib.rs"
 
 [dependencies]
-async-std = { version = "1.13", default-features = false, features = [
-    "attributes",
-    "tokio1",
+tokio = { version = "1", default-features = false, features = [
+    "macros",
+    "rt-multi-thread",
 ] }
 sea-orm-migration = { version = "1.1.19", default-features = false, features = [
     "cli",
-    "runtime-async-std-rustls",
+    "runtime-tokio-rustls",
     "sqlx-postgres",
     "sqlx-sqlite",
 ] }

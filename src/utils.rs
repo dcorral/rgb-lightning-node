@@ -1,9 +1,9 @@
 use crate::database::RlnDatabase;
 use crate::kv_store::SeaOrmKvStore;
+use crate::runtime::block_on;
 use amplify::s;
 use bitcoin::io;
 use bitcoin::secp256k1::PublicKey;
-use futures::executor::block_on;
 use futures::Future;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::types::ChannelId;
@@ -354,7 +354,7 @@ pub(crate) async fn start_daemon(args: &UserArgs) -> Result<Arc<AppState>, AppEr
     let ldk_data_dir = args.storage_dir_path.join(LDK_DIR);
     let logger = Arc::new(FilesystemLogger::new(ldk_data_dir.clone()));
 
-    // Initialize the shared database connection
+    // Initialize the shared database connection on DB_RUNTIME
     let db_path = get_db_path(&args.storage_dir_path);
     let connection_string = format!("sqlite:{}?mode=rwc", db_path.display());
     let mut opt = ConnectOptions::new(connection_string);

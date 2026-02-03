@@ -32,7 +32,7 @@ use lightning::{
 };
 use lightning::{
     ln::channelmanager::{PaymentId, RecipientOnionFields, Retry},
-    rgb_utils::{write_rgb_channel_info, write_rgb_payment_info_file, RgbInfo},
+    rgb_utils::{write_rgb_channel_info, write_rgb_payment_info_file, RgbAssetSchema, RgbInfo},
     routing::{
         gossip::NodeId,
         router::{PaymentParameters, RouteParameters},
@@ -333,7 +333,6 @@ impl From<Network> for BitcoinNetwork {
             Network::Testnet4 => Self::Testnet4,
             Network::Regtest => Self::Regtest,
             Network::Signet => Self::Signet,
-            _ => unimplemented!("unsupported network"),
         }
     }
 }
@@ -345,7 +344,7 @@ impl From<RgbLibNetwork> for BitcoinNetwork {
             RgbLibNetwork::Testnet => Self::Testnet,
             RgbLibNetwork::Testnet4 => Self::Testnet4,
             RgbLibNetwork::Regtest => Self::Regtest,
-            RgbLibNetwork::Signet => Self::Signet,
+            RgbLibNetwork::Signet | RgbLibNetwork::SignetCustom(_) => Self::Signet,
         }
     }
 }
@@ -3173,9 +3172,16 @@ pub(crate) async fn open_channel(
         tracing::info!("EVENT: initiated channel with peer {}", peer_pubkey);
 
         if let Some((contract_id, asset_amount)) = &colored_info {
+            // Convert from rgb_lib::AssetSchema to lightning::rgb_utils::RgbAssetSchema
+            let ldk_schema = match schema.unwrap() {
+                RgbLibAssetSchema::Nia => RgbAssetSchema::Nia,
+                RgbLibAssetSchema::Cfa => RgbAssetSchema::Cfa,
+                RgbLibAssetSchema::Uda => RgbAssetSchema::Uda,
+                RgbLibAssetSchema::Ifa => RgbAssetSchema::Ifa,
+            };
             let rgb_info = RgbInfo {
                 contract_id: *contract_id,
-                schema: schema.unwrap(),
+                schema: ldk_schema,
                 local_rgb_amount: *asset_amount,
                 remote_rgb_amount: 0,
             };
