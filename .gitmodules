@@ -3,3 +3,4 @@
 	url = https://github.com/RGB-Tools/rust-lightning.git
 	branch = rgb
 	shallow = true
+
