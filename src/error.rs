@@ -72,9 +72,6 @@ pub enum APIError {
     #[error("Failed to issue asset: {0}")]
     FailedIssuingAsset(String),
 
-    #[error("Unable to create keys seed file {0}: {1}")]
-    FailedKeysCreation(String, String),
-
     #[error("Failed to open channel: {0}")]
     FailedOpenChannel(String),
 
@@ -342,7 +339,6 @@ impl From<RgbLibError> for APIError {
             }
             RgbLibError::InvalidAddress { details } => APIError::InvalidAddress(details),
             RgbLibError::InvalidAmountZero => APIError::InvalidAmount(s!("0")),
-            RgbLibError::InvalidAssetID { asset_id } => APIError::InvalidAssetID(asset_id),
             RgbLibError::InvalidAssignment => APIError::InvalidAssignment,
             RgbLibError::InvalidAttachments { details } => APIError::InvalidAttachments(details),
             RgbLibError::InvalidDetails { details } => APIError::InvalidDetails(details),
@@ -403,7 +399,6 @@ impl IntoResponse for APIError {
             APIError::FailedClosingChannel(_)
             | APIError::FailedInvoiceCreation(_)
             | APIError::FailedIssuingAsset(_)
-            | APIError::FailedKeysCreation(_, _)
             | APIError::FailedOpenChannel(_)
             | APIError::FailedPayment(_)
             | APIError::FailedPeerDisconnection(_)
@@ -528,9 +523,6 @@ impl IntoResponse for APIError {
 pub enum AppError {
     #[error("The provided authentication args are invalid")]
     InvalidAuthenticationArgs,
-
-    #[error("The revoked tokens file contains an invalid entry")]
-    InvalidRevokedTokensFile,
 
     #[error("The provided root public key is invalid")]
     InvalidRootKey,
