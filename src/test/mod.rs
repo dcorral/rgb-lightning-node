@@ -1,5 +1,7 @@
 use amplify::s;
 use biscuit_auth::{builder::date, macros::*, KeyPair};
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::Hash;
 use chrono::{DateTime, Local, Utc};
 use electrum_client::ElectrumApi;
 use lazy_static::lazy_static;
@@ -21,15 +23,16 @@ use tracing_test::traced_test;
 use crate::error::APIErrorResponse;
 use crate::ldk::FEE_RATE;
 use crate::routes::{
-    AddressResponse, AssetBalanceRequest, AssetBalanceResponse, AssetCFA, AssetNIA, AssetUDA,
-    Assignment, BackupRequest, BtcBalanceRequest, BtcBalanceResponse, ChangePasswordRequest,
-    Channel, CloseChannelRequest, ConnectPeerRequest, CreateUtxosRequest, DecodeLNInvoiceRequest,
-    DecodeLNInvoiceResponse, DecodeRGBInvoiceRequest, DecodeRGBInvoiceResponse,
-    DisconnectPeerRequest, EmptyResponse, FailTransfersRequest, FailTransfersResponse,
-    GetAssetMediaRequest, GetAssetMediaResponse, GetChannelIdRequest, GetChannelIdResponse,
-    GetPaymentRequest, GetPaymentResponse, GetSwapRequest, GetSwapResponse, HTLCStatus,
-    InitRequest, InitResponse, InvoiceStatus, InvoiceStatusRequest, InvoiceStatusResponse,
-    IssueAssetCFARequest, IssueAssetCFAResponse, IssueAssetNIARequest, IssueAssetNIAResponse,
+    AddressResponse, AssetBalanceRequest, AssetBalanceResponse, AssetCFA, AssetIFA, AssetNIA,
+    AssetUDA, Assignment, BackupRequest, BtcBalanceRequest, BtcBalanceResponse,
+    ChangePasswordRequest, Channel, CloseChannelRequest, ConnectPeerRequest, CreateUtxosRequest,
+    DecodeLNInvoiceRequest, DecodeLNInvoiceResponse, DecodeRGBInvoiceRequest,
+    DecodeRGBInvoiceResponse, DisconnectPeerRequest, EmptyResponse, FailTransfersRequest,
+    FailTransfersResponse, GetAssetMediaRequest, GetAssetMediaResponse, GetChannelIdRequest,
+    GetChannelIdResponse, GetPaymentRequest, GetPaymentResponse, GetSwapRequest, GetSwapResponse,
+    HTLCStatus, InflateRequest, InflateResponse, InitRequest, InitResponse, InvoiceStatus,
+    InvoiceStatusRequest, InvoiceStatusResponse, IssueAssetCFARequest, IssueAssetCFAResponse,
+    IssueAssetIFARequest, IssueAssetIFAResponse, IssueAssetNIARequest, IssueAssetNIAResponse,
     IssueAssetUDARequest, IssueAssetUDAResponse, KeysendRequest, KeysendResponse, LNInvoiceRequest,
     LNInvoiceResponse, ListAssetsRequest, ListAssetsResponse, ListChannelsResponse,
     ListPaymentsResponse, ListPeersResponse, ListSwapsResponse, ListTransactionsRequest,
@@ -41,7 +44,7 @@ use crate::routes::{
     SendPaymentResponse, SendRgbRequest, SendRgbResponse, Swap, SwapStatus, TakerRequest,
     Transaction, Transfer, UnlockRequest, Unspent, WitnessData,
 };
-use crate::utils::{hex_str_to_vec, ELECTRUM_URL_REGTEST, PROXY_ENDPOINT_LOCAL};
+use crate::utils::{hex_str, hex_str_to_vec, ELECTRUM_URL_REGTEST, PROXY_ENDPOINT_LOCAL};
 
 use super::*;
 
@@ -81,6 +84,13 @@ fn _bitcoin_cli() -> [String; 7] {
         s!("bitcoin-cli"),
         s!("-regtest"),
     ]
+}
+
+fn check_preimage_matches_hash(payment: &Payment, expected_payment_hash: &str) {
+    let payment_preimage = payment.preimage.as_ref().unwrap();
+    let payment_preimage_hash =
+        hex_str(&Sha256::hash(&hex_str_to_vec(payment_preimage).unwrap()).to_byte_array());
+    assert_eq!(payment_preimage_hash, expected_payment_hash);
 }
 
 async fn _check_response_is_ok(res: Response) -> Response {
@@ -565,6 +575,27 @@ async fn get_channel_id(node_address: SocketAddr, temp_chan_id: &str) -> String 
         .channel_id
 }
 
+async fn inflate(node_address: SocketAddr, asset_id: &str, inflation_amount: u64) {
+    println!("inflating asset {asset_id} by {inflation_amount}");
+    let payload = InflateRequest {
+        asset_id: asset_id.to_string(),
+        inflation_amounts: vec![inflation_amount],
+        fee_rate: FEE_RATE,
+        min_confirmations: 1,
+    };
+    let res = reqwest::Client::new()
+        .post(format!("http://{node_address}/inflate"))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    _check_response_is_ok(res)
+        .await
+        .json::<InflateResponse>()
+        .await
+        .unwrap();
+}
+
 async fn invoice_status(node_address: SocketAddr, invoice: &str) -> InvoiceStatus {
     println!("getting status of invoice {invoice} for node {node_address}");
     let payload = InvoiceStatusRequest {
@@ -606,6 +637,31 @@ async fn issue_asset_cfa(node_address: SocketAddr, file_path: Option<&str>) -> A
     _check_response_is_ok(res)
         .await
         .json::<IssueAssetCFAResponse>()
+        .await
+        .unwrap()
+        .asset
+}
+
+async fn issue_asset_ifa(node_address: SocketAddr) -> AssetIFA {
+    println!("issuing IFA asset on node {node_address}");
+    let payload = IssueAssetIFARequest {
+        amounts: vec![1000],
+        inflation_amounts: vec![2000],
+        ticker: s!("USDT"),
+        name: s!("Tether"),
+        precision: 0,
+        replace_rights_num: 0,
+        reject_list_url: None,
+    };
+    let res = reqwest::Client::new()
+        .post(format!("http://{node_address}/issueassetifa"))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    _check_response_is_ok(res)
+        .await
+        .json::<IssueAssetIFAResponse>()
         .await
         .unwrap()
         .asset
@@ -1876,6 +1932,7 @@ mod concurrent_openchannel;
 mod fail_transfers;
 mod getchannelid;
 mod htlc_amount_checks;
+mod inflate;
 mod init;
 mod invoice;
 mod issue;

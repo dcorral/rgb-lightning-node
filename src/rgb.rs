@@ -7,17 +7,16 @@ use bitcoin::{Address, Network, OutPoint, Transaction, TxOut, WPubkeyHash};
 use hex::DisplayHex;
 use lightning::events::bump_transaction::{Utxo, WalletSource};
 use lightning::ln::types::ChannelId;
-use lightning::rgb_utils::{
-    get_rgb_channel_info_path, is_channel_rgb, parse_rgb_channel_info, RgbInfo,
-};
+use lightning::rgb_utils::{RgbInfo, RgbKvStoreExt};
 use lightning::sign::ChangeDestinationSource;
 use lightning::util::async_poll::AsyncResult;
+use lightning::util::persist::KVStoreSync;
 use rgb_lib::{
     bdk_wallet::SignOptions,
     bitcoin::psbt::Psbt as BitcoinPsbt,
     wallet::{
         rust_only::{check_proxy_url, ColoringInfo},
-        AssetCFA, AssetNIA, AssetUDA, Assets, Balance, BtcBalance, Metadata, Online,
+        AssetCFA, AssetIFA, AssetNIA, AssetUDA, Assets, Balance, BtcBalance, Metadata, Online,
         OperationResult, ReceiveData, Recipient, RefreshResult, Transaction as RgbLibTransaction,
         Transfer, TransportEndpoint, Unspent, WalletData,
     },
@@ -114,6 +113,17 @@ impl UnlockedAppState {
         self.rgb_wallet_wrapper.get_wallet_data()
     }
 
+    pub(crate) fn rgb_inflate(
+        &self,
+        asset_id: String,
+        inflation_amounts: Vec<u64>,
+        fee_rate: u64,
+        min_confirmations: u8,
+    ) -> Result<OperationResult, RgbLibError> {
+        self.rgb_wallet_wrapper
+            .inflate(asset_id, inflation_amounts, fee_rate, min_confirmations)
+    }
+
     pub(crate) fn rgb_issue_asset_cfa(
         &self,
         name: String,
@@ -124,6 +134,28 @@ impl UnlockedAppState {
     ) -> Result<AssetCFA, RgbLibError> {
         self.rgb_wallet_wrapper
             .issue_asset_cfa(name, details, precision, amounts, file_path)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn rgb_issue_asset_ifa(
+        &self,
+        ticker: String,
+        name: String,
+        precision: u8,
+        amounts: Vec<u64>,
+        inflation_amounts: Vec<u64>,
+        replace_rights_num: u8,
+        reject_list_url: Option<String>,
+    ) -> Result<AssetIFA, RgbLibError> {
+        self.rgb_wallet_wrapper.issue_asset_ifa(
+            ticker,
+            name,
+            precision,
+            amounts,
+            inflation_amounts,
+            replace_rights_num,
+            reject_list_url,
+        )
     }
 
     pub(crate) fn rgb_issue_asset_nia(
@@ -430,6 +462,22 @@ impl RgbLibWalletWrapper {
         self.get_rgb_wallet().get_wallet_data()
     }
 
+    pub(crate) fn inflate(
+        &self,
+        asset_id: String,
+        inflation_amounts: Vec<u64>,
+        fee_rate: u64,
+        min_confirmations: u8,
+    ) -> Result<OperationResult, RgbLibError> {
+        self.get_rgb_wallet().inflate(
+            self.online.clone(),
+            asset_id,
+            inflation_amounts,
+            fee_rate,
+            min_confirmations,
+        )
+    }
+
     pub(crate) fn issue_asset_cfa(
         &self,
         name: String,
@@ -440,6 +488,28 @@ impl RgbLibWalletWrapper {
     ) -> Result<AssetCFA, RgbLibError> {
         self.get_rgb_wallet()
             .issue_asset_cfa(name, details, precision, amounts, file_path)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn issue_asset_ifa(
+        &self,
+        ticker: String,
+        name: String,
+        precision: u8,
+        amounts: Vec<u64>,
+        inflation_amounts: Vec<u64>,
+        replace_rights_num: u8,
+        reject_list_url: Option<String>,
+    ) -> Result<AssetIFA, RgbLibError> {
+        self.get_rgb_wallet().issue_asset_ifa(
+            ticker,
+            name,
+            precision,
+            amounts,
+            inflation_amounts,
+            replace_rights_num,
+            reject_list_url,
+        )
     }
 
     pub(crate) fn issue_asset_nia(
@@ -735,14 +805,11 @@ pub(crate) async fn check_rgb_proxy_endpoint(proxy_endpoint: &str) -> Result<(),
 
 pub(crate) fn get_rgb_channel_info_optional(
     channel_id: &ChannelId,
-    ldk_data_dir: &Path,
     pending: bool,
-) -> Option<(RgbInfo, PathBuf)> {
-    if !is_channel_rgb(channel_id, ldk_data_dir) {
-        return None;
-    }
-    let info_file_path =
-        get_rgb_channel_info_path(&channel_id.0.as_hex().to_string(), ldk_data_dir, pending);
-    let rgb_info = parse_rgb_channel_info(&info_file_path);
-    Some((rgb_info, info_file_path))
+    kv_store: &dyn KVStoreSync,
+) -> Option<RgbInfo> {
+    let channel_id_str = channel_id.0.as_hex().to_string();
+    kv_store
+        .read_rgb_channel_info(&channel_id_str, pending)
+        .ok()
 }

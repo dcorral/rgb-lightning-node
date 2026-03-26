@@ -71,9 +71,6 @@ pub enum APIError {
     #[error("Failed to issue asset: {0}")]
     FailedIssuingAsset(String),
 
-    #[error("Unable to create keys seed file {0}: {1}")]
-    FailedKeysCreation(String, String),
-
     #[error("Failed to open channel: {0}")]
     FailedOpenChannel(String),
 
@@ -293,6 +290,9 @@ pub enum APIError {
     #[error("The provided backup has an unsupported version: {version}")]
     UnsupportedBackupVersion { version: String },
 
+    #[error("Inflation is not supported by schema {0}")]
+    UnsupportedInflation(String),
+
     #[error("Layer 1 {0} is not supported")]
     UnsupportedLayer1(String),
 
@@ -313,6 +313,12 @@ impl APIError {
             .next()
             .unwrap()
             .to_string()
+    }
+}
+
+impl From<sea_orm::DbErr> for APIError {
+    fn from(err: sea_orm::DbErr) -> Self {
+        APIError::IO(std::io::Error::other(format!("database error: {err}")))
     }
 }
 
@@ -386,6 +392,9 @@ impl From<RgbLibError> for APIError {
             RgbLibError::MaxFeeExceeded { txid } => APIError::MaxFeeExceeded(txid),
             RgbLibError::MinFeeNotMet { txid } => APIError::MinFeeNotMet(txid),
             RgbLibError::Network { details } => APIError::Network(details),
+            RgbLibError::NoInflationAmounts => {
+                APIError::InvalidAmount(s!("inflation request with no amounts or zero amounts"))
+            }
             RgbLibError::NoIssuanceAmounts => {
                 APIError::InvalidAmount(s!("issuance request with no provided amounts"))
             }
@@ -393,8 +402,14 @@ impl From<RgbLibError> for APIError {
             RgbLibError::OutputBelowDustLimit => APIError::OutputBelowDustLimit,
             RgbLibError::Proxy { details } => APIError::Network(format!("proxy err: {details}")),
             RgbLibError::RecipientIDAlreadyUsed => APIError::RecipientIDAlreadyUsed,
+            RgbLibError::TooHighInflationAmounts => {
+                APIError::InvalidAmount(s!("inflation amount exceeds the max possible supply"))
+            }
             RgbLibError::TooHighIssuanceAmounts => {
                 APIError::InvalidAmount(s!("trying to issue too many assets"))
+            }
+            RgbLibError::UnsupportedInflation { asset_schema } => {
+                APIError::UnsupportedInflation(format!("{asset_schema}"))
             }
             RgbLibError::UnsupportedLayer1 { layer_1 } => APIError::UnsupportedLayer1(layer_1),
             RgbLibError::UnsupportedTransportType => APIError::UnsupportedTransportType,
@@ -412,7 +427,6 @@ impl IntoResponse for APIError {
             APIError::FailedClosingChannel(_)
             | APIError::FailedInvoiceCreation(_)
             | APIError::FailedIssuingAsset(_)
-            | APIError::FailedKeysCreation(_, _)
             | APIError::FailedOpenChannel(_)
             | APIError::FailedPayment(_)
             | APIError::FailedPeerDisconnection(_)
@@ -506,6 +520,7 @@ impl IntoResponse for APIError {
             | APIError::UnknownLNInvoice
             | APIError::UnknownTemporaryChannelId
             | APIError::UnlockedNode
+            | APIError::UnsupportedInflation(_)
             | APIError::UnsupportedLayer1(_)
             | APIError::UnsupportedTransportType => {
                 (StatusCode::FORBIDDEN, self.to_string(), self.name())
@@ -539,9 +554,6 @@ impl IntoResponse for APIError {
 pub enum AppError {
     #[error("The provided authentication args are invalid")]
     InvalidAuthenticationArgs,
-
-    #[error("The revoked tokens file contains an invalid entry")]
-    InvalidRevokedTokensFile,
 
     #[error("The provided root public key is invalid")]
     InvalidRootKey,
