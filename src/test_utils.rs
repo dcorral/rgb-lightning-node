@@ -33,6 +33,8 @@ pub fn mock_locked_app_state() -> TestAppState {
             enable_virtual_channels_v0: false,
             virtual_peer_pubkeys: vec![],
             database: Arc::new(database),
+            vss_url: None,
+            vss_unencrypted: false,
         }),
         cancel_token: CancellationToken::new(),
         unlocked_app_state: Arc::new(TokioMutex::new(None)),

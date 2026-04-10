@@ -42,6 +42,14 @@ struct Args {
 
     #[arg(long, value_delimiter = ',')]
     virtual_peer_pubkeys: Vec<String>,
+
+    /// VSS server URL for cloud backup (e.g., http://localhost:8081/vss)
+    #[arg(long)]
+    vss_url: Option<String>,
+
+    /// Disable encryption for VSS backups (default: encrypted)
+    #[arg(long, default_value_t = false)]
+    vss_unencrypted: bool,
 }
 
 pub(crate) struct UserArgs {
@@ -53,6 +61,8 @@ pub(crate) struct UserArgs {
     pub(crate) root_public_key: Option<biscuit_auth::PublicKey>,
     pub(crate) enable_virtual_channels_v0: bool,
     pub(crate) virtual_peer_pubkeys: Vec<PublicKey>,
+    pub(crate) vss_url: Option<String>,
+    pub(crate) vss_unencrypted: bool,
 }
 
 pub(crate) fn parse_startup_args() -> Result<UserArgs, AppError> {
@@ -84,5 +94,7 @@ pub(crate) fn parse_startup_args() -> Result<UserArgs, AppError> {
         root_public_key,
         enable_virtual_channels_v0: args.enable_virtual_channels_v0,
         virtual_peer_pubkeys,
+        vss_url: args.vss_url,
+        vss_unencrypted: args.vss_unencrypted,
     })
 }

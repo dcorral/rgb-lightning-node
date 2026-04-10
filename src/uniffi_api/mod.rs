@@ -44,6 +44,8 @@ fn handle_from_request(request: SdkInitRequest) -> Result<NodeHandle, RlnError> 
         root_public_key: None,
         enable_virtual_channels_v0: request.enable_virtual_channels_v0.unwrap_or(false),
         virtual_peer_pubkeys: request.virtual_peer_pubkeys.unwrap_or_default(),
+        vss_url: None,
+        vss_unencrypted: false,
     };
     block_on_app(NodeHandle::new(config))
 }

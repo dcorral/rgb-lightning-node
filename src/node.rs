@@ -16,6 +16,8 @@ pub struct NodeConfig {
     pub root_public_key: Option<biscuit_auth::PublicKey>,
     pub enable_virtual_channels_v0: bool,
     pub virtual_peer_pubkeys: Vec<bitcoin::secp256k1::PublicKey>,
+    pub vss_url: Option<String>,
+    pub vss_unencrypted: bool,
 }
 
 #[derive(Clone)]
@@ -44,6 +46,8 @@ impl NodeHandle {
             root_public_key: config.root_public_key,
             enable_virtual_channels_v0: config.enable_virtual_channels_v0,
             virtual_peer_pubkeys: config.virtual_peer_pubkeys,
+            vss_url: config.vss_url,
+            vss_unencrypted: config.vss_unencrypted,
         };
         let state = start_daemon(&args).await?;
         Ok(Self { state })
