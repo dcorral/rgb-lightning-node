@@ -2901,6 +2901,7 @@ pub(crate) async fn start_ldk(
                     AssetSchema::Uda,
                     AssetSchema::Ifa,
                 ],
+                reuse_addresses: false,
             },
             keys,
         )

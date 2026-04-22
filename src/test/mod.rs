@@ -2154,6 +2154,7 @@ mod close_force_other_side;
 mod close_force_standard;
 mod concurrent_btc_payments;
 mod concurrent_openchannel;
+mod cross_channel_payment_hash_regression;
 mod fail_transfers;
 mod getchannelid;
 mod hodl_invoice;
