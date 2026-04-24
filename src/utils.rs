@@ -1,5 +1,5 @@
 use crate::database::RlnDatabase;
-use crate::kv_store::SeaOrmKvStore;
+use crate::synced_kv_store::SyncedKvStore;
 use amplify::s;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
@@ -104,6 +104,12 @@ pub(crate) struct StaticState {
     pub(crate) virtual_peer_pubkeys: Vec<PublicKey>,
     /// Shared database connection for mnemonic storage and LDK KVStore
     pub(crate) database: Arc<DatabaseConnection>,
+    /// VSS server URL (None = VSS disabled)
+    #[cfg_attr(not(feature = "vss"), allow(dead_code))]
+    pub(crate) vss_url: Option<String>,
+    /// Whether VSS backups should be unencrypted
+    #[cfg_attr(not(feature = "vss"), allow(dead_code))]
+    pub(crate) vss_unencrypted: bool,
 }
 
 pub(crate) struct UnlockedAppState {
@@ -115,7 +121,7 @@ pub(crate) struct UnlockedAppState {
     pub(crate) onion_messenger: Arc<OnionMessenger>,
     pub(crate) outbound_payments: Arc<Mutex<OutboundPaymentInfoStorage>>,
     pub(crate) peer_manager: Arc<PeerManager>,
-    pub(crate) kv_store: Arc<SeaOrmKvStore>,
+    pub(crate) kv_store: Arc<SyncedKvStore>,
     pub(crate) bump_tx_event_handler: Arc<BumpTxEventHandler>,
     pub(crate) maker_swaps: Arc<Mutex<SwapMap>>,
     pub(crate) taker_swaps: Arc<Mutex<SwapMap>>,
@@ -397,6 +403,10 @@ pub(crate) async fn start_daemon(args: &UserArgs) -> Result<Arc<AppState>, AppEr
 
     let cancel_token = CancellationToken::new();
 
+    if args.vss_url.is_some() {
+        tracing::info!(vss_url = ?args.vss_url, "VSS cloud backup enabled");
+    }
+
     let static_state = Arc::new(StaticState {
         enable_virtual_channels_v0: args.enable_virtual_channels_v0,
         ldk_peer_listening_port: args.ldk_peer_listening_port,
@@ -407,6 +417,8 @@ pub(crate) async fn start_daemon(args: &UserArgs) -> Result<Arc<AppState>, AppEr
         max_media_upload_size_mb: args.max_media_upload_size_mb,
         virtual_peer_pubkeys: args.virtual_peer_pubkeys.clone(),
         database: Arc::new(database),
+        vss_url: args.vss_url.clone(),
+        vss_unencrypted: args.vss_unencrypted,
     });
 
     let app_state = Arc::new(AppState {
