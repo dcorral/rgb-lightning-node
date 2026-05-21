@@ -355,7 +355,6 @@ pub(crate) struct SendRgbRequestData {
     pub(crate) donation: bool,
     pub(crate) fee_rate: u64,
     pub(crate) min_confirmations: u8,
-    pub(crate) skip_sync: bool,
     pub(crate) recipient_groups: Vec<AssetRecipientsInput>,
 }
 
@@ -728,7 +727,8 @@ pub(crate) enum TransactionType {
     RgbSend,
     Drain,
     CreateUtxos,
-    User,
+    SendBtc,
+    Incoming,
 }
 
 #[derive(Debug, PartialEq)]
@@ -738,12 +738,14 @@ pub(crate) enum TransferKind {
     ReceiveWitness,
     Send,
     Inflation,
+    Burn,
 }
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum TransferStatus {
     Initiated,
     WaitingCounterparty,
+    WaitingSafeHeight,
     WaitingConfirmations,
     Settled,
     Failed,
@@ -1549,7 +1551,6 @@ pub(crate) async fn send_rgb(
     donation: bool,
     fee_rate: u64,
     min_confirmations: u8,
-    skip_sync: bool,
 ) -> Result<SendRgbData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
@@ -1560,14 +1561,7 @@ pub(crate) async fn send_rgb(
 
     let unlocked_state_copy = unlocked_state.clone();
     let send_result = tokio::task::spawn_blocking(move || {
-        unlocked_state_copy.rgb_send(
-            recipient_map,
-            donation,
-            fee_rate,
-            min_confirmations,
-            None,
-            skip_sync,
-        )
+        unlocked_state_copy.rgb_send(recipient_map, donation, fee_rate, min_confirmations, None)
     })
     .await
     .unwrap()?;
@@ -1620,7 +1614,6 @@ pub(crate) async fn send_rgb_from_groups(
         request.donation,
         request.fee_rate,
         request.min_confirmations,
-        request.skip_sync,
     )
     .await
 }
@@ -1633,16 +1626,22 @@ pub(crate) async fn init(
     let _unlocked_state = check_locked(&state).await?;
 
     check_password_strength(password.clone())?;
-    check_already_initialized(&state.static_state.database)?;
+    check_already_initialized(&state.db())?;
 
     let mnemonic = match mnemonic {
         Some(mnemonic) => Mnemonic::from_str(&mnemonic)
             .map_err(|e| APIError::InvalidMnemonic(e.to_string()))?
             .to_string(),
-        None => generate_keys(state.static_state.network).mnemonic,
+        None => {
+            generate_keys(
+                state.static_state.network,
+                rgb_lib::keys::WitnessVersion::Taproot,
+            )
+            .mnemonic
+        }
     };
 
-    encrypt_and_save_mnemonic(password, mnemonic.clone(), &state.static_state.database)?;
+    encrypt_and_save_mnemonic(password, mnemonic.clone(), &state.db())?;
     Ok(InitData { mnemonic })
 }
 
@@ -1661,7 +1660,7 @@ pub(crate) async fn unlock(state: Arc<AppState>, request: UnlockRequest) -> Resu
         }
     }
 
-    let mnemonic = match check_password_validity(&request.password, &state.static_state.database) {
+    let mnemonic = match check_password_validity(&request.password, &state.db()) {
         Ok(mnemonic) => mnemonic,
         Err(e) => {
             update_changing_state(&state, false);
@@ -2504,6 +2503,8 @@ pub(crate) async fn open_channel(
                 MIN_CHANNEL_CONFIRMATIONS,
                 None,
                 true,
+                // Channel-funding dry run: mirror the real funding tx's final locktime.
+                Some(0),
             )
         })
         .await
@@ -2512,6 +2513,46 @@ pub(crate) async fn open_channel(
     } else {
         None
     };
+
+    // Persist RGB channel_info before create_channel so funding
+    // event handlers always observe the metadata.
+    let (temporary_channel_id, rgb_metadata_temp_id_str) =
+        if let Some((contract_id, asset_amount)) = &colored_info {
+            let temp_id = match temporary_channel_id {
+                Some(id) => id,
+                None => loop {
+                    let mut bytes = [0u8; 32];
+                    bytes.copy_from_slice(
+                        &unlocked_state.keys_manager.get_secure_random_bytes()[..32],
+                    );
+                    let candidate = ChannelId::from_bytes(bytes);
+                    if !unlocked_state.channel_ids().contains_key(&candidate)
+                        && !unlocked_state
+                            .virtual_channel_draft_store()
+                            .contains_key(&candidate)
+                    {
+                        break candidate;
+                    }
+                },
+            };
+            let temp_id_str = temp_id.0.as_hex().to_string();
+            let push_amount = request.push_asset_amount.unwrap_or(0);
+            let rgb_info = RgbInfo {
+                contract_id: *contract_id,
+                schema: schema.unwrap(),
+                local_rgb_amount: *asset_amount - push_amount,
+                remote_rgb_amount: push_amount,
+            };
+            unlocked_state
+                .kv_store
+                .write_rgb_channel_info(&temp_id_str, &rgb_info, true);
+            unlocked_state
+                .kv_store
+                .write_rgb_channel_info(&temp_id_str, &rgb_info, false);
+            (Some(temp_id), Some(temp_id_str))
+        } else {
+            (temporary_channel_id, None)
+        };
 
     *unlocked_state.rgb_send_lock.lock().unwrap() = true;
     tracing::debug!("RGB send lock set to true");
@@ -2531,6 +2572,14 @@ pub(crate) async fn open_channel(
         .map_err(|e| {
             *unlocked_state.rgb_send_lock.lock().unwrap() = false;
             tracing::debug!("RGB send lock set to false (open channel failure: {e:?})");
+            if let Some(temp_id_str) = rgb_metadata_temp_id_str.as_deref() {
+                let _ = unlocked_state
+                    .kv_store
+                    .remove_rgb_channel_info(temp_id_str, true);
+                let _ = unlocked_state
+                    .kv_store
+                    .remove_rgb_channel_info(temp_id_str, false);
+            }
             match e {
                 LDKAPIError::APIMisuseError { err }
                     if err.contains("fee for initial commitment transaction") =>
@@ -2554,22 +2603,6 @@ pub(crate) async fn open_channel(
 
     let temporary_channel_id = temporary_channel_id.0.as_hex().to_string();
     tracing::info!("EVENT: initiated channel with peer {}", peer_pubkey);
-
-    if let Some((contract_id, asset_amount)) = &colored_info {
-        let push_amount = request.push_asset_amount.unwrap_or(0);
-        let rgb_info = RgbInfo {
-            contract_id: *contract_id,
-            schema: schema.unwrap(),
-            local_rgb_amount: *asset_amount - push_amount,
-            remote_rgb_amount: push_amount,
-        };
-        unlocked_state
-            .kv_store
-            .write_rgb_channel_info(&temporary_channel_id, &rgb_info, true);
-        unlocked_state
-            .kv_store
-            .write_rgb_channel_info(&temporary_channel_id, &rgb_info, false);
-    }
 
     Ok(OpenChannelData {
         temporary_channel_id,
@@ -3665,7 +3698,8 @@ pub(crate) async fn list_transactions(
                 rgb_lib::wallet::TransactionType::RgbSend => TransactionType::RgbSend,
                 rgb_lib::wallet::TransactionType::Drain => TransactionType::Drain,
                 rgb_lib::wallet::TransactionType::CreateUtxos => TransactionType::CreateUtxos,
-                rgb_lib::wallet::TransactionType::User => TransactionType::User,
+                rgb_lib::wallet::TransactionType::SendBtc => TransactionType::SendBtc,
+                rgb_lib::wallet::TransactionType::Incoming => TransactionType::Incoming,
             },
             txid: tx.txid,
             received: tx.received,
@@ -3697,6 +3731,7 @@ pub(crate) async fn list_transfers(
             status: match transfer.status {
                 rgb_lib::TransferStatus::Initiated => TransferStatus::Initiated,
                 rgb_lib::TransferStatus::WaitingCounterparty => TransferStatus::WaitingCounterparty,
+                rgb_lib::TransferStatus::WaitingSafeHeight => TransferStatus::WaitingSafeHeight,
                 rgb_lib::TransferStatus::WaitingConfirmations => {
                     TransferStatus::WaitingConfirmations
                 }
@@ -3711,6 +3746,7 @@ pub(crate) async fn list_transfers(
                 rgb_lib::wallet::TransferKind::ReceiveWitness => TransferKind::ReceiveWitness,
                 rgb_lib::wallet::TransferKind::Send => TransferKind::Send,
                 rgb_lib::wallet::TransferKind::Inflation => TransferKind::Inflation,
+                rgb_lib::wallet::TransferKind::Burn => TransferKind::Burn,
             },
             txid: transfer.txid,
             recipient_id: transfer.recipient_id,

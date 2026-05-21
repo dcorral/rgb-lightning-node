@@ -11,7 +11,7 @@ mod uniffi_smoke_tests {
     use serial_test::serial;
     use std::collections::HashSet;
     use std::str::FromStr;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, RwLock};
     use tokio::sync::Mutex as TokioMutex;
     use tokio_util::sync::CancellationToken;
 
@@ -67,7 +67,6 @@ mod uniffi_smoke_tests {
             donation: false,
             fee_rate: 1,
             min_confirmations: 1,
-            skip_sync: true,
             recipient_groups: vec![],
         });
         assert!(matches!(send_rgb, Err(RlnError::NotInitialized)));
@@ -94,9 +93,11 @@ mod uniffi_smoke_tests {
                 max_media_upload_size_mb: 1,
                 enable_virtual_channels_v0: false,
                 virtual_peer_pubkeys: vec![],
-                database: Arc::new(database),
+                database: RwLock::new(Arc::new(database)),
                 lsp_base_url: None,
                 lsp_bearer_token: None,
+                vss_url: None,
+                vss_allow_empty_restore: false,
             }),
             cancel_token: CancellationToken::new(),
             unlocked_app_state: Arc::new(TokioMutex::new(None)),
@@ -131,7 +132,6 @@ mod uniffi_smoke_tests {
             donation: false,
             fee_rate: 1,
             min_confirmations: 1,
-            skip_sync: true,
             recipient_groups: vec![],
         });
         assert!(matches!(send_rgb, Err(RlnError::InvalidRequest)));
@@ -165,7 +165,6 @@ mod uniffi_smoke_tests {
             donation: false,
             fee_rate: 1,
             min_confirmations: 1,
-            skip_sync: true,
             recipient_groups: vec![],
         });
         assert!(matches!(send_rgb, Err(RlnError::InvalidRequest)));
