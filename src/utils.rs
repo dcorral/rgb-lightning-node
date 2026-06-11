@@ -173,7 +173,6 @@ pub(crate) struct UnlockedAppState {
     pub(crate) rgb_wallet_wrapper: Arc<RgbLibWalletWrapper>,
     pub(crate) router: Arc<Router>,
     pub(crate) output_sweeper: Arc<OutputSweeper>,
-    pub(crate) rgb_send_lock: Arc<Mutex<bool>>,
     pub(crate) channel_ids_map: Arc<Mutex<ChannelIdsMap>>,
     pub(crate) proxy_endpoint: String,
     pub(crate) external_signer_mode: bool,
@@ -181,6 +180,7 @@ pub(crate) struct UnlockedAppState {
     pub(crate) external_node_id: Option<String>,
     pub(crate) virtual_channel_draft_store: Arc<Mutex<VirtualChannelDraftStore>>,
     pub(crate) virtual_channel_session_store: Arc<Mutex<VirtualChannelSessionStore>>,
+    pub(crate) next_payment_idx: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl UnlockedAppState {

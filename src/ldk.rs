@@ -252,6 +252,8 @@ pub(crate) struct PaymentInfo {
     pub(crate) expires_at: Option<u64>,
     pub(crate) claim_deadline_height: Option<u32>,
     pub(crate) invoice_type: Option<InvoiceType>,
+    pub(crate) description_hash: Option<[u8; 32]>,
+    pub(crate) payment_idx: Option<u64>,
 }
 
 impl_writeable_tlv_based!(PaymentInfo, {
@@ -265,6 +267,8 @@ impl_writeable_tlv_based!(PaymentInfo, {
     (14, expires_at, option),
     (16, claim_deadline_height, option),
     (18, invoice_type, option),
+    (20, description_hash, option),
+    (22, payment_idx, option),
 });
 
 pub(crate) struct InboundPaymentInfoStorage {
@@ -372,10 +376,15 @@ impl VirtualChannelSessionStore {
 
 fn persist_staged_inbound_payment(
     kv_store: &dyn KVStoreSync,
+    next_payment_idx: &std::sync::atomic::AtomicU64,
     inbound: &mut InboundPaymentInfoStorage,
     payment_hash: PaymentHash,
-    payment_info: PaymentInfo,
+    mut payment_info: PaymentInfo,
 ) -> Result<(), JsonRpcErrorWire> {
+    if payment_info.payment_idx.is_none() {
+        payment_info.payment_idx =
+            Some(next_payment_idx.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+    }
     let mut staged_inbound = InboundPaymentInfoStorage {
         payments: inbound.payments.clone(),
     };
@@ -460,8 +469,25 @@ impl UnlockedAppState {
         self.get_taker_swaps().swaps.clone()
     }
 
-    pub(crate) fn add_inbound_payment(&self, payment_hash: PaymentHash, payment_info: PaymentInfo) {
+    /// Assign a stable, monotonically increasing index to a payment if it does
+    /// not already have one. Indices are shared across inbound and outbound
+    /// payments so the two sets can be merged and paged in a stable order.
+    pub(crate) fn stamp_payment_idx(&self, payment_info: &mut PaymentInfo) {
+        if payment_info.payment_idx.is_none() {
+            payment_info.payment_idx = Some(
+                self.next_payment_idx
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+            );
+        }
+    }
+
+    pub(crate) fn add_inbound_payment(
+        &self,
+        payment_hash: PaymentHash,
+        mut payment_info: PaymentInfo,
+    ) {
         let mut inbound = self.get_inbound_payments();
+        self.stamp_payment_idx(&mut payment_info);
         inbound.payments.insert(payment_hash, payment_info);
         self.save_inbound_payments(inbound);
     }
@@ -469,7 +495,7 @@ impl UnlockedAppState {
     pub(crate) fn add_outbound_payment(
         &self,
         payment_id: PaymentId,
-        payment_info: PaymentInfo,
+        mut payment_info: PaymentInfo,
     ) -> Result<(), APIError> {
         let mut outbound = self.get_outbound_payments();
         if let Some(existing_payment) = outbound.payments.get(&payment_id) {
@@ -479,6 +505,7 @@ impl UnlockedAppState {
                 ));
             }
         }
+        self.stamp_payment_idx(&mut payment_info);
         outbound.payments.insert(payment_id, payment_info);
         self.save_outbound_payments(outbound);
         Ok(())
@@ -637,7 +664,7 @@ impl UnlockedAppState {
             }
             Entry::Vacant(e) => {
                 let created_at = get_current_timestamp();
-                e.insert(PaymentInfo {
+                let mut payment_info = PaymentInfo {
                     preimage,
                     secret,
                     status,
@@ -648,7 +675,11 @@ impl UnlockedAppState {
                     expires_at: None,
                     claim_deadline_height,
                     invoice_type,
-                });
+                    description_hash: None,
+                    payment_idx: None,
+                };
+                self.stamp_payment_idx(&mut payment_info);
+                e.insert(payment_info);
             }
         }
         self.save_inbound_payments(inbound);
@@ -1100,6 +1131,7 @@ struct AsyncOrderRecipientInvoiceProvider {
     inbound_payments: Arc<Mutex<InboundPaymentInfoStorage>>,
     async_payments_preimage_root: Arc<AsyncPaymentsPreimageRoot>,
     kv_store: Arc<SyncedKvStore>,
+    next_payment_idx: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl AsyncOrderRecipientInvoiceProvider {
@@ -1207,6 +1239,7 @@ impl AsyncOrderInvoiceProvider for AsyncOrderRecipientInvoiceProvider {
         };
         persist_staged_inbound_payment(
             self.kv_store.as_ref(),
+            self.next_payment_idx.as_ref(),
             &mut inbound,
             requested_payment_hash,
             PaymentInfo {
@@ -1222,6 +1255,8 @@ impl AsyncOrderInvoiceProvider for AsyncOrderRecipientInvoiceProvider {
                 invoice_type: Some(InvoiceType::Hodl {
                     async_payment_recipient: true,
                 }),
+                description_hash: crate::routes::description_hash_from_invoice(&invoice),
+                payment_idx: None,
             },
         )?;
 
@@ -1393,7 +1428,6 @@ fn normalize_funding_psbt_locktime(
 // FundingGenerationReady. Returns the value to propagate from the event handler: `Err(ReplayEvent)`
 // to retry the event (for transient network errors), or `Ok(())` after force-closing the channel
 // (for terminal errors).
-#[allow(dead_code)]
 fn handle_funding_prepare_err(
     e: RgbLibError,
     channel_manager: &ChannelManager,
@@ -1521,7 +1555,6 @@ async fn handle_ldk_events(
                         false,
                     );
                     unlocked_state.virtual_channel_draft_delete(&temporary_channel_id);
-                    *unlocked_state.rgb_send_lock.lock().unwrap() = false;
                 };
 
                 let mut virtual_funding_txo = virtual_channel_synthetic_outpoint(
@@ -1722,7 +1755,6 @@ async fn handle_ldk_events(
                             updated_at: get_current_timestamp(),
                         });
                         unlocked_state.virtual_channel_draft_delete(&temporary_channel_id);
-                        *unlocked_state.rgb_send_lock.lock().unwrap() = false;
                         tracing::info!(
                             "EVENT: registered trusted no-broadcast funding {} for virtual channel {}",
                             virtual_funding_txo,
@@ -1742,7 +1774,6 @@ async fn handle_ldk_events(
                             false,
                         );
                         unlocked_state.virtual_channel_draft_delete(&temporary_channel_id);
-                        *unlocked_state.rgb_send_lock.lock().unwrap() = false;
                     }
                 }
                 return Ok(());
@@ -1779,29 +1810,21 @@ async fn handle_ldk_events(
 
                 let unlocked_state_copy = unlocked_state.clone();
                 let res = tokio::task::spawn_blocking(
-                    move || -> Result<(String, Option<i32>), String> {
-                        let res = unlocked_state_copy
-                            .rgb_send_begin(
-                                recipient_map,
-                                true,
-                                FEE_RATE,
-                                MIN_CHANNEL_CONFIRMATIONS,
-                                None,
-                                false,
-                                // Final locktime: this colored tx funds an LN channel.
-                                Some(0),
-                            )
-                            .map_err(|e| e.to_string())?;
-                        let fascia_str = fs::read_to_string(&res.details.fascia_path)
-                            .map_err(|e| e.to_string())?;
-                        let fascia: Fascia =
-                            serde_json::from_str(&fascia_str).map_err(|e| e.to_string())?;
-                        unlocked_state_copy
-                            .rgb_consume_fascia(fascia, None)
-                            .map_err(|e| e.to_string())?;
-                        unlocked_state_copy
-                            .rgb_create_consignments(res.psbt.clone())
-                            .map_err(|e| e.to_string())?;
+                    move || -> Result<(String, Option<i32>), RgbLibError> {
+                        let res = unlocked_state_copy.rgb_send_begin(
+                            recipient_map,
+                            true,
+                            FEE_RATE,
+                            MIN_CHANNEL_CONFIRMATIONS,
+                            None,
+                            false,
+                            // Final locktime: this colored tx funds an LN channel.
+                            Some(0),
+                        )?;
+                        let fascia_str = fs::read_to_string(&res.details.fascia_path).unwrap();
+                        let fascia: Fascia = serde_json::from_str(&fascia_str).unwrap();
+                        unlocked_state_copy.rgb_consume_fascia(fascia, None)?;
+                        unlocked_state_copy.rgb_create_consignments(res.psbt.clone())?;
                         Ok((res.psbt, res.batch_transfer_idx))
                     },
                 )
@@ -1809,9 +1832,18 @@ async fn handle_ldk_events(
                 .unwrap();
                 let (unsigned_psbt, batch_transfer_idx) = match res {
                     Ok(result) => result,
+                    // A failed funding preparation (e.g. the asset allocation is
+                    // momentarily reserved by a concurrent open) must fail the
+                    // channel so the caller can retry, not retry the event
+                    // forever. handle_open_chan_fail (on ChannelClosed) then
+                    // releases any reserved allocation.
                     Err(e) => {
-                        tracing::error!("cannot prepare channel funding transfer: {e}");
-                        return Err(ReplayEvent());
+                        return handle_funding_prepare_err(
+                            e,
+                            &unlocked_state.channel_manager,
+                            &temporary_channel_id,
+                            &counterparty_node_id,
+                        );
                     }
                 };
                 // Record the batch transfer index on the channel's RGB info so a failed
@@ -1831,9 +1863,25 @@ async fn handle_ldk_events(
                 }
                 (unsigned_psbt, Some(asset_id))
             } else {
-                let raw_psbt = unlocked_state
-                    .rgb_send_btc_begin(addr.to_address(), channel_value_satoshis, FEE_RATE)
-                    .unwrap();
+                // Mirror the colored path: a failed funding preparation must fail
+                // the channel (so the caller can retry) rather than panic the event
+                // task. handle_funding_prepare_err force-closes on terminal errors
+                // and replays the event on transient network errors.
+                let raw_psbt = match unlocked_state.rgb_send_btc_begin(
+                    addr.to_address(),
+                    channel_value_satoshis,
+                    FEE_RATE,
+                ) {
+                    Ok(psbt) => psbt,
+                    Err(e) => {
+                        return handle_funding_prepare_err(
+                            e,
+                            &unlocked_state.channel_manager,
+                            &temporary_channel_id,
+                            &counterparty_node_id,
+                        );
+                    }
+                };
                 let current_best_height =
                     unlocked_state.channel_manager.current_best_block().height;
                 let unsigned_psbt =
@@ -1950,7 +1998,6 @@ async fn handle_ldk_events(
                 tracing::error!(
                     "ERROR: Channel went away before we could fund it. The peer disconnected or refused the channel.",
                 );
-                *unlocked_state.rgb_send_lock.lock().unwrap() = false;
             }
         }
         Event::FundingTxBroadcastSafe { .. } => {
@@ -2069,36 +2116,43 @@ async fn handle_ldk_events(
 
             match invoice.invoice_type.unwrap_or(InvoiceType::AutoClaim) {
                 InvoiceType::AutoClaim => {
-                    unlocked_state
-                        .channel_manager
-                        .claim_funds(payment_preimage.unwrap());
+                    let Some(claim_preimage) = payment_preimage else {
+                        tracing::error!(
+                            "Missing LDK preimage for auto-claim invoice {:?}",
+                            payment_hash
+                        );
+                        return Err(ReplayEvent());
+                    };
+                    unlocked_state.channel_manager.claim_funds(claim_preimage);
                 }
                 InvoiceType::Hodl {
-                    async_payment_recipient,
+                    async_payment_recipient: true,
                 } => {
-                    if async_payment_recipient {
-                        unlocked_state
-                            .channel_manager
-                            .claim_funds(payment_preimage.unwrap());
-                    } else {
-                        unlocked_state.upsert_inbound_payment(
-                            payment_hash,
-                            HTLCStatus::Claimable,
-                            payment_preimage,
-                            payment_secret,
-                            Some(amount_msat),
-                            unlocked_state.channel_manager.get_our_node_id(),
-                            claim_deadline,
-                            None,
+                    let Some(stored_preimage) = invoice.preimage else {
+                        tracing::error!(
+                            "Missing stored preimage for async recipient invoice {:?}",
+                            payment_hash
                         );
-                        unlocked_state
-                            .async_order_handler
-                            .notify_claimable_hodl_invoice(
-                                payment_hash,
-                                amount_msat,
-                                claim_deadline,
-                            );
-                    }
+                        return Err(ReplayEvent());
+                    };
+                    unlocked_state.channel_manager.claim_funds(stored_preimage);
+                }
+                InvoiceType::Hodl {
+                    async_payment_recipient: false,
+                } => {
+                    unlocked_state.upsert_inbound_payment(
+                        payment_hash,
+                        HTLCStatus::Claimable,
+                        payment_preimage,
+                        payment_secret,
+                        Some(amount_msat),
+                        unlocked_state.channel_manager.get_our_node_id(),
+                        claim_deadline,
+                        None,
+                    );
+                    unlocked_state
+                        .async_order_handler
+                        .notify_claimable_hodl_invoice(payment_hash, amount_msat, claim_deadline);
                 }
             }
         }
@@ -2535,7 +2589,6 @@ async fn handle_ldk_events(
                 .virtual_channel_session_store()
                 .contains_key(&channel_id)
             {
-                *unlocked_state.rgb_send_lock.lock().unwrap() = false;
                 tracing::info!(
                     "EVENT: virtual channel {} is pending in trusted no-broadcast mode",
                     channel_id,
@@ -2568,8 +2621,6 @@ async fn handle_ldk_events(
                         }
                     })
                     .await;
-
-                    *unlocked_state.rgb_send_lock.lock().unwrap() = false;
 
                     let finalize_result = join_result.map_err(|join_err| {
                         tracing::error!("Channel opening finalization task failed: {join_err:?}");
@@ -2654,8 +2705,6 @@ async fn handle_ldk_events(
                 reason
             );
 
-            *unlocked_state.rgb_send_lock.lock().unwrap() = false;
-
             // Release any funds locked for a funding tx that was never broadcast.
             handle_open_chan_fail(&channel_id, unlocked_state.clone()).await;
 
@@ -2687,7 +2736,6 @@ async fn handle_ldk_events(
                     &format!("virtual_channel_{}", channel_id),
                     false,
                 );
-                *unlocked_state.rgb_send_lock.lock().unwrap() = false;
 
                 tracing::warn!(
                     "EVENT: cleaned up failed virtual open draft {} after channel close {}",
@@ -3855,12 +3903,7 @@ pub(crate) async fn start_ldk(
                 bitcoin_network,
                 database_type: DatabaseType::Sqlite,
                 max_allocations_per_utxo: 1,
-                supported_schemas: vec![
-                    AssetSchema::Nia,
-                    AssetSchema::Cfa,
-                    AssetSchema::Uda,
-                    AssetSchema::Ifa,
-                ],
+                supported_schemas: vec![AssetSchema::Nia, AssetSchema::Cfa, AssetSchema::Uda],
                 reuse_addresses: false,
             },
             keys,
@@ -4318,6 +4361,67 @@ pub(crate) async fn start_ldk(
         }
     }));
 
+    // Seed the shared payment-index counter and backfill any records persisted
+    // before payment indexing existed. Missing indices are assigned
+    // deterministically by (created_at, payment hash/id) so the ordering is
+    // stable across restarts.
+    let next_payment_idx = {
+        let mut inbound_g = inbound_payments.lock().unwrap();
+        let mut outbound_g = outbound_payments.lock().unwrap();
+
+        let mut max_idx = 0u64;
+        for info in inbound_g
+            .payments
+            .values()
+            .chain(outbound_g.payments.values())
+        {
+            if let Some(i) = info.payment_idx {
+                max_idx = max_idx.max(i);
+            }
+        }
+
+        let mut missing: Vec<(u64, [u8; 32], bool)> = Vec::new();
+        for (h, info) in inbound_g.payments.iter() {
+            if info.payment_idx.is_none() {
+                missing.push((info.created_at, h.0, true));
+            }
+        }
+        for (id, info) in outbound_g.payments.iter() {
+            if info.payment_idx.is_none() {
+                missing.push((info.created_at, id.0, false));
+            }
+        }
+        missing.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+        let mut changed = false;
+        for (_, key, is_inbound) in missing {
+            max_idx += 1;
+            if is_inbound {
+                inbound_g
+                    .payments
+                    .get_mut(&PaymentHash(key))
+                    .unwrap()
+                    .payment_idx = Some(max_idx);
+            } else {
+                outbound_g
+                    .payments
+                    .get_mut(&PaymentId(key))
+                    .unwrap()
+                    .payment_idx = Some(max_idx);
+            }
+            changed = true;
+        }
+        if changed {
+            kv_store
+                .write("", "", INBOUND_PAYMENTS_KEY, inbound_g.encode())
+                .unwrap();
+            kv_store
+                .write("", "", OUTBOUND_PAYMENTS_KEY, outbound_g.encode())
+                .unwrap();
+        }
+        Arc::new(std::sync::atomic::AtomicU64::new(max_idx + 1))
+    };
+
     let bump_wallet_source = Arc::new(RgbBumpWalletSource {
         inner: rgb_wallet_wrapper.clone(),
         signer: keys_manager.clone(),
@@ -4416,6 +4520,7 @@ pub(crate) async fn start_ldk(
         inbound_payments: Arc::clone(&inbound_payments),
         async_payments_preimage_root: Arc::clone(&async_payments_preimage_root),
         kv_store: Arc::clone(&kv_store),
+        next_payment_idx: Arc::clone(&next_payment_idx),
     }));
 
     let unlocked_state = Arc::new(UnlockedAppState {
@@ -4438,7 +4543,6 @@ pub(crate) async fn start_ldk(
         taker_swaps,
         router: Arc::clone(&router),
         output_sweeper: Arc::clone(&output_sweeper),
-        rgb_send_lock: Arc::new(Mutex::new(false)),
         channel_ids_map,
         proxy_endpoint: proxy_endpoint.to_string(),
         external_signer_mode,
@@ -4446,6 +4550,7 @@ pub(crate) async fn start_ldk(
         external_node_id,
         virtual_channel_draft_store,
         virtual_channel_session_store,
+        next_payment_idx,
     });
 
     // Refresh the RGS snapshot on a fixed interval (RGS mode only). The first

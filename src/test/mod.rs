@@ -1048,18 +1048,33 @@ async fn list_channels(node_address: SocketAddr) -> Vec<Channel> {
 }
 
 async fn list_payments(node_address: SocketAddr) -> Vec<Payment> {
+    list_payments_full(node_address, None, None).await.payments
+}
+
+async fn list_payments_full(
+    node_address: SocketAddr,
+    index_offset: Option<u64>,
+    max_payments: Option<u64>,
+) -> ListPaymentsResponse {
     println!("listing payments for node {node_address}");
-    let res = reqwest::Client::new()
-        .get(format!("http://{node_address}/listpayments"))
-        .send()
-        .await
-        .unwrap();
+    let mut url = format!("http://{node_address}/listpayments");
+    let mut query = vec![];
+    if let Some(offset) = index_offset {
+        query.push(format!("index_offset={offset}"));
+    }
+    if let Some(max) = max_payments {
+        query.push(format!("max_payments={max}"));
+    }
+    if !query.is_empty() {
+        url.push('?');
+        url.push_str(&query.join("&"));
+    }
+    let res = reqwest::Client::new().get(url).send().await.unwrap();
     check_response_is_ok(res)
         .await
         .json::<ListPaymentsResponse>()
         .await
         .unwrap()
-        .payments
 }
 
 async fn get_payment(
@@ -1204,6 +1219,37 @@ async fn ln_invoice(
         InvoiceType::AutoClaim,
     )
     .await
+}
+
+async fn ln_invoice_with_description_hash(
+    node_address: SocketAddr,
+    amt_msat: Option<u64>,
+    expiry_sec: u32,
+    description_hash: Option<&str>,
+) -> LNInvoiceResponse {
+    println!(
+        "generating invoice with description_hash {description_hash:?} for node {node_address}"
+    );
+    let payload = LNInvoiceRequest {
+        amt_msat: Some(amt_msat.unwrap_or(3000000)),
+        expiry_sec,
+        asset_id: None,
+        asset_amount: None,
+        payment_hash: None,
+        description_hash: description_hash.map(|s| s.to_string()),
+        min_final_cltv_expiry_delta: None,
+    };
+    let res = reqwest::Client::new()
+        .post(format!("http://{node_address}/lninvoice"))
+        .json(&payload)
+        .send()
+        .await
+        .unwrap();
+    check_response_is_ok(res)
+        .await
+        .json::<LNInvoiceResponse>()
+        .await
+        .unwrap()
 }
 
 async fn ln_invoice_hodl(
@@ -1580,7 +1626,13 @@ async fn open_channel_raw(
             }
         }
         if (OffsetDateTime::now_utc() - t_0).as_seconds_f32() > 50.0 {
-            panic!("cannot find funding TX")
+            // The channel may have been force-closed before reaching
+            // ChannelPending (e.g. a colored funding preparation failed because
+            // the asset allocation was momentarily reserved by a concurrent
+            // open). Surface a retryable error so open_channel_with_retry tries
+            // again once the contending open has settled.
+            println!("cannot find funding TX for channel to {dest_peer_pubkey}");
+            return Err(reqwest::StatusCode::FORBIDDEN);
         }
     }
     let channel_id = channel_id.unwrap();

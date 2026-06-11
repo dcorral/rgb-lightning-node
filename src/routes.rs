@@ -803,9 +803,19 @@ pub(crate) struct ListChannelsResponse {
 }
 
 #[derive(Deserialize, Serialize)]
+pub(crate) struct ListPaymentsRequest {
+    pub(crate) index_offset: Option<u64>,
+    pub(crate) max_payments: Option<u64>,
+}
+
+#[derive(Deserialize, Serialize)]
 pub(crate) struct ListPaymentsResponse {
     pub(crate) payments: Vec<Payment>,
+    pub(crate) first_index_offset: u64,
+    pub(crate) last_index_offset: u64,
 }
+
+const DEFAULT_MAX_PAYMENTS: u64 = 100;
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct ListPeersResponse {
@@ -978,6 +988,14 @@ pub(crate) struct Payment {
     pub(crate) updated_at: u64,
     pub(crate) payee_pubkey: String,
     pub(crate) preimage: Option<String>,
+    pub(crate) description_hash: Option<String>,
+}
+
+pub(crate) fn description_hash_from_invoice(invoice: &Bolt11Invoice) -> Option<[u8; 32]> {
+    match invoice.description() {
+        lightning_invoice::Bolt11InvoiceDescriptionRef::Hash(hash) => Some(hash.0.to_byte_array()),
+        _ => None,
+    }
 }
 
 fn payment_type_from_invoice(invoice_type: Option<InvoiceType>) -> PaymentType {
@@ -2449,6 +2467,7 @@ pub(crate) async fn get_payment(
                             updated_at: payment_info.updated_at,
                             payee_pubkey: payment_info.payee_pubkey.to_string(),
                             preimage: payment_info.preimage.map(|p| hex_str(&p.0)),
+                            description_hash: payment_info.description_hash.map(|h| hex_str(&h)),
                         },
                     }));
                 }
@@ -2478,6 +2497,7 @@ pub(crate) async fn get_payment(
                             updated_at: payment_info.updated_at,
                             payee_pubkey: payment_info.payee_pubkey.to_string(),
                             preimage: payment_info.preimage.map(|p| hex_str(&p.0)),
+                            description_hash: payment_info.description_hash.map(|h| hex_str(&h)),
                         },
                     }));
                 }
@@ -2826,6 +2846,8 @@ pub(crate) async fn keysend(
                 expires_at: None,
                 invoice_type: None,
                 payee_pubkey: dest_pubkey,
+                description_hash: None,
+                payment_idx: None,
 
                 updated_at: created_at,
             },
@@ -3051,13 +3073,14 @@ pub(crate) async fn list_channels(
 
 pub(crate) async fn list_payments(
     State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<ListPaymentsRequest>,
 ) -> Result<Json<ListPaymentsResponse>, APIError> {
     let guard = state.check_unlocked().await?;
     let unlocked_state = guard.as_ref().unwrap();
 
     let inbound_payments = unlocked_state.list_updated_inbound_payments();
     let outbound_payments = unlocked_state.outbound_payments();
-    let mut payments = vec![];
+    let mut all: Vec<(u64, Payment)> = vec![];
 
     for (payment_hash, payment_info) in &inbound_payments {
         let (asset_amount, asset_id) = match unlocked_state
@@ -3068,18 +3091,22 @@ pub(crate) async fn list_payments(
             Err(_) => (None, None),
         };
 
-        payments.push(Payment {
-            amt_msat: payment_info.amt_msat,
-            asset_amount,
-            asset_id,
-            payment_hash: hex_str(&payment_hash.0),
-            payment_type: payment_type_from_invoice(payment_info.invoice_type),
-            status: payment_info.status,
-            created_at: payment_info.created_at,
-            updated_at: payment_info.updated_at,
-            payee_pubkey: payment_info.payee_pubkey.to_string(),
-            preimage: payment_info.preimage.map(|p| hex_str(&p.0)),
-        });
+        all.push((
+            payment_info.payment_idx.unwrap_or(0),
+            Payment {
+                amt_msat: payment_info.amt_msat,
+                asset_amount,
+                asset_id,
+                payment_hash: hex_str(&payment_hash.0),
+                payment_type: payment_type_from_invoice(payment_info.invoice_type),
+                status: payment_info.status,
+                created_at: payment_info.created_at,
+                updated_at: payment_info.updated_at,
+                payee_pubkey: payment_info.payee_pubkey.to_string(),
+                preimage: payment_info.preimage.map(|p| hex_str(&p.0)),
+                description_hash: payment_info.description_hash.map(|h| hex_str(&h)),
+            },
+        ));
     }
 
     for (payment_id, payment_info) in &outbound_payments {
@@ -3093,21 +3120,50 @@ pub(crate) async fn list_payments(
             Err(_) => (None, None),
         };
 
-        payments.push(Payment {
-            amt_msat: payment_info.amt_msat,
-            asset_amount,
-            asset_id,
-            payment_hash: hex_str(&payment_hash.0),
-            payment_type: PaymentType::Outbound,
-            status: payment_info.status,
-            created_at: payment_info.created_at,
-            updated_at: payment_info.updated_at,
-            payee_pubkey: payment_info.payee_pubkey.to_string(),
-            preimage: payment_info.preimage.map(|p| hex_str(&p.0)),
-        });
+        all.push((
+            payment_info.payment_idx.unwrap_or(0),
+            Payment {
+                amt_msat: payment_info.amt_msat,
+                asset_amount,
+                asset_id,
+                payment_hash: hex_str(&payment_hash.0),
+                payment_type: PaymentType::Outbound,
+                status: payment_info.status,
+                created_at: payment_info.created_at,
+                updated_at: payment_info.updated_at,
+                payee_pubkey: payment_info.payee_pubkey.to_string(),
+                preimage: payment_info.preimage.map(|p| hex_str(&p.0)),
+                description_hash: payment_info.description_hash.map(|h| hex_str(&h)),
+            },
+        ));
     }
 
-    Ok(Json(ListPaymentsResponse { payments }))
+    // Newest-first ordering by stable payment index.
+    all.sort_by_key(|(idx, _)| std::cmp::Reverse(*idx));
+
+    let index_offset = params.index_offset.unwrap_or(0);
+    let max_payments = match params.max_payments {
+        Some(0) | None => DEFAULT_MAX_PAYMENTS,
+        Some(m) => m,
+    };
+
+    // `index_offset` is an exclusive upper-bound cursor; 0 means no bound
+    // (start from the most recent payment).
+    let page: Vec<(u64, Payment)> = all
+        .into_iter()
+        .filter(|(idx, _)| index_offset == 0 || *idx < index_offset)
+        .take(max_payments as usize)
+        .collect();
+
+    let first_index_offset = page.first().map(|(idx, _)| *idx).unwrap_or(0);
+    let last_index_offset = page.last().map(|(idx, _)| *idx).unwrap_or(0);
+    let payments = page.into_iter().map(|(_, p)| p).collect();
+
+    Ok(Json(ListPaymentsResponse {
+        payments,
+        first_index_offset,
+        last_index_offset,
+    }))
 }
 
 pub(crate) async fn list_peers(
@@ -3376,6 +3432,8 @@ pub(crate) async fn ln_invoice(
                 expires_at: Some(created_at + payload.expiry_sec as u64),
                 claim_deadline_height: None,
                 invoice_type: Some(invoice_type),
+                description_hash: description_hash_from_invoice(&invoice),
+                payment_idx: None,
             },
         );
 
@@ -3827,10 +3885,6 @@ pub(crate) async fn open_channel(
         let guard = state.check_unlocked().await?;
         let unlocked_state = guard.as_ref().unwrap();
 
-        if *unlocked_state.rgb_send_lock.lock().unwrap() {
-            return Err(APIError::OpenChannelInProgress);
-        }
-
         let is_virtual_open = match payload.virtual_open_mode.as_deref() {
             None => false,
             Some(VIRTUAL_OPEN_MODE_TRUSTED_NO_BROADCAST) => true,
@@ -4122,14 +4176,6 @@ pub(crate) async fn open_channel(
             (temporary_channel_id, None)
         };
 
-        // Only colored opens perform an RGB send during funding, so only they need
-        // the RGB send lock. Vanilla opens that stall (e.g. an unresponsive peer)
-        // must not hold it, or they would block all subsequent opens indefinitely.
-        if colored_info.is_some() {
-            *unlocked_state.rgb_send_lock.lock().unwrap() = true;
-            tracing::debug!("RGB send lock set to true");
-        }
-
         let temporary_channel_id = unlocked_state
             .channel_manager
             .create_channel(
@@ -4143,8 +4189,6 @@ pub(crate) async fn open_channel(
                 payload.push_asset_amount,
             )
             .map_err(|e| {
-                *unlocked_state.rgb_send_lock.lock().unwrap() = false;
-                tracing::debug!("RGB send lock set to false (open channel failure: {e:?})");
                 if let Some(temp_id_str) = rgb_metadata_temp_id_str.as_deref() {
                     let _ = unlocked_state
                         .kv_store
@@ -4490,6 +4534,8 @@ pub(crate) async fn send_payment(
                     expires_at: None,
                     claim_deadline_height: None,
                     invoice_type: None,
+                    description_hash: None,
+                    payment_idx: None,
                 },
             )?;
 
@@ -4596,6 +4642,8 @@ pub(crate) async fn send_payment(
                     expires_at: None,
                     claim_deadline_height: None,
                     invoice_type: None,
+                    description_hash: description_hash_from_invoice(&invoice),
+                    payment_idx: None,
                 },
             )?;
             let payment_hash = PaymentHash(invoice.payment_hash().to_byte_array());

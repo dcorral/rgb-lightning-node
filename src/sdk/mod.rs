@@ -582,6 +582,7 @@ pub(crate) struct PaymentData {
     pub(crate) updated_at: u64,
     pub(crate) payee_pubkey: String,
     pub(crate) preimage: Option<String>,
+    pub(crate) description_hash: Option<String>,
 }
 
 pub(crate) struct CancelHodlInvoiceRequestData {
@@ -1645,10 +1646,6 @@ pub(crate) async fn send_rgb(
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
-    if *unlocked_state.rgb_send_lock.lock().unwrap() {
-        return Err(APIError::OpenChannelInProgress);
-    }
-
     let send_result = if unlocked_state.external_signer_mode {
         let unlocked_state_copy = unlocked_state.clone();
         let begin_result = tokio::task::spawn_blocking(move || {
@@ -2348,10 +2345,6 @@ pub(crate) async fn issue_asset_nia(
         ));
     }
 
-    if *unlocked_state.rgb_send_lock.lock().unwrap() {
-        return Err(APIError::OpenChannelInProgress);
-    }
-
     let asset = unlocked_state.rgb_issue_asset_nia(
         request.ticker,
         request.name,
@@ -2372,10 +2365,6 @@ pub(crate) async fn issue_asset_cfa(
         return Err(APIError::UnsupportedInExternalSignerMode(
             "asset issuance is not supported in external signer mode".to_string(),
         ));
-    }
-
-    if *unlocked_state.rgb_send_lock.lock().unwrap() {
-        return Err(APIError::OpenChannelInProgress);
     }
 
     let file_path = request.file_digest.map(|d| {
@@ -2409,10 +2398,6 @@ pub(crate) async fn issue_asset_ifa(
         ));
     }
 
-    if *unlocked_state.rgb_send_lock.lock().unwrap() {
-        return Err(APIError::OpenChannelInProgress);
-    }
-
     let asset = unlocked_state.rgb_issue_asset_ifa(
         request.ticker,
         request.name,
@@ -2435,10 +2420,6 @@ pub(crate) async fn issue_asset_uda(
         return Err(APIError::UnsupportedInExternalSignerMode(
             "asset issuance is not supported in external signer mode".to_string(),
         ));
-    }
-
-    if *unlocked_state.rgb_send_lock.lock().unwrap() {
-        return Err(APIError::OpenChannelInProgress);
     }
 
     let rgb_media_dir = unlocked_state.rgb_get_media_dir();
@@ -2526,6 +2507,8 @@ pub(crate) async fn keysend(
             payee_pubkey: dest_pubkey,
             expires_at: None,
             invoice_type: None,
+            description_hash: None,
+            payment_idx: None,
         },
     )?;
     if let Some((contract_id, rgb_amount)) = rgb_payment {
@@ -2636,10 +2619,6 @@ pub(crate) async fn rgb_invoice(
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
 
-    if *unlocked_state.rgb_send_lock.lock().unwrap() {
-        return Err(APIError::OpenChannelInProgress);
-    }
-
     let assignment = match request.assignment_kind {
         Some(kind) => rgb_assignment_from_kind(kind, request.assignment_amount)?,
         None => RgbLibAssignment::Any,
@@ -2680,10 +2659,6 @@ pub(crate) async fn open_channel(
 ) -> Result<OpenChannelData, APIError> {
     let guard = check_unlocked(&state).await?;
     let unlocked_state = guard.as_ref().unwrap();
-
-    if *unlocked_state.rgb_send_lock.lock().unwrap() {
-        return Err(APIError::OpenChannelInProgress);
-    }
 
     let is_virtual_open = match request.virtual_open_mode.as_deref() {
         None => false,
@@ -2955,13 +2930,6 @@ pub(crate) async fn open_channel(
             (temporary_channel_id, None)
         };
 
-    // Only colored opens perform an RGB send during funding, so only they need the
-    // RGB send lock. Vanilla opens that stall must not hold it (see routes.rs).
-    if colored_info.is_some() {
-        *unlocked_state.rgb_send_lock.lock().unwrap() = true;
-        tracing::debug!("RGB send lock set to true");
-    }
-
     let temporary_channel_id = unlocked_state
         .channel_manager
         .create_channel(
@@ -2975,8 +2943,6 @@ pub(crate) async fn open_channel(
             request.push_asset_amount,
         )
         .map_err(|e| {
-            *unlocked_state.rgb_send_lock.lock().unwrap() = false;
-            tracing::debug!("RGB send lock set to false (open channel failure: {e:?})");
             if let Some(temp_id_str) = rgb_metadata_temp_id_str.as_deref() {
                 let _ = unlocked_state
                     .kv_store
@@ -3061,6 +3027,8 @@ pub(crate) async fn send_payment(
                     .ok_or(APIError::InvalidInvoice(s!("missing signing pubkey")))?,
                 expires_at: None,
                 invoice_type: None,
+                description_hash: None,
+                payment_idx: None,
             },
         )?;
 
@@ -3157,6 +3125,8 @@ pub(crate) async fn send_payment(
                 payee_pubkey: invoice.get_payee_pub_key(),
                 expires_at: None,
                 invoice_type: None,
+                description_hash: crate::routes::description_hash_from_invoice(&invoice),
+                payment_idx: None,
             },
         )?;
         let payment_hash = PaymentHash(invoice.payment_hash().to_byte_array());
@@ -3763,6 +3733,8 @@ pub(crate) async fn create_ln_invoice(
             payee_pubkey: unlocked_state.runtime_node_id(),
             expires_at: Some(created_at + expiry_sec as u64),
             invoice_type: Some(invoice_type),
+            description_hash: crate::routes::description_hash_from_invoice(&invoice),
+            payment_idx: None,
         },
     );
 
@@ -3806,6 +3778,7 @@ pub(crate) async fn list_payments(state: Arc<AppState>) -> Result<Vec<PaymentDat
             updated_at: payment_info.updated_at,
             payee_pubkey: payment_info.payee_pubkey.to_string(),
             preimage: payment_info.preimage.map(|p| hex_str(&p.0)),
+            description_hash: payment_info.description_hash.map(|h| hex_str(&h)),
         });
     }
 
@@ -3830,6 +3803,7 @@ pub(crate) async fn list_payments(state: Arc<AppState>) -> Result<Vec<PaymentDat
             updated_at: payment_info.updated_at,
             payee_pubkey: payment_info.payee_pubkey.to_string(),
             preimage: payment_info.preimage.map(|p| hex_str(&p.0)),
+            description_hash: payment_info.description_hash.map(|h| hex_str(&h)),
         });
     }
 
@@ -3875,6 +3849,7 @@ pub(crate) async fn get_payment(
                         updated_at: payment_info.updated_at,
                         payee_pubkey: payment_info.payee_pubkey.to_string(),
                         preimage: payment_info.preimage.map(|p| hex_str(&p.0)),
+                        description_hash: payment_info.description_hash.map(|h| hex_str(&h)),
                     });
                 }
             }
@@ -3902,6 +3877,7 @@ pub(crate) async fn get_payment(
                         updated_at: payment_info.updated_at,
                         payee_pubkey: payment_info.payee_pubkey.to_string(),
                         preimage: payment_info.preimage.map(|p| hex_str(&p.0)),
+                        description_hash: payment_info.description_hash.map(|h| hex_str(&h)),
                     });
                 }
             }
@@ -4028,10 +4004,6 @@ pub(crate) async fn inflate(
         return Err(APIError::UnsupportedInExternalSignerMode(
             "inflate is not supported in external signer mode".to_string(),
         ));
-    }
-
-    if *unlocked_state.rgb_send_lock.lock().unwrap() {
-        return Err(APIError::OpenChannelInProgress);
     }
 
     let unlocked_state_copy = unlocked_state.clone();

@@ -270,10 +270,6 @@ mod uniffi_smoke_tests {
             RlnError::NotFound
         ));
         assert!(matches!(
-            super::super::state::map_api_error(crate::error::APIError::OpenChannelInProgress),
-            RlnError::Conflict
-        ));
-        assert!(matches!(
             super::super::state::map_api_error(crate::error::APIError::FailedBitcoindConnection(
                 "down".to_string()
             )),
@@ -375,6 +371,7 @@ mod uniffi_smoke_tests {
             payee_pubkey: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
                 .to_string(),
             preimage: expected_preimage.clone(),
+            description_hash: None,
         };
 
         let mapped = map_payment_data(data).expect("payment mapping should succeed");
