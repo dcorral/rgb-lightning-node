@@ -174,3 +174,6 @@ required-features = ["uniffi", "test-utils"]
 name = "lib_sdk"
 path = "src/test/lib_sdk/mod.rs"
 required-features = ["uniffi", "test-utils", "vls"]
+
+[patch."https://github.com/UTEXO-Protocol/rgb-lib.git"]
+rgb-lib = { git = "https://github.com/dcorral/rgb-lib.git", branch = "feat/outpoint-assignments" }

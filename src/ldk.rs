@@ -3236,24 +3236,56 @@ impl OutputSpender for RgbOutputSpender {
                 continue;
             }
 
-            vanilla_descriptor = false;
-
+            // Any failure from here on must not panic: this runs under the
+            // OutputSweeper lock and a panic would poison it, wedging every
+            // future sweep. Returning Err makes the sweeper retry later.
             let closing_height = self
                 .rgb_wallet_wrapper
                 .get_tx_height(txid_str.clone())
-                .map_err(|_| ())?;
+                .map_err(|e| {
+                    tracing::error!("sweep: cannot get height of closing tx {txid_str}: {e}");
+                })?
+                .ok_or_else(|| {
+                    tracing::error!("sweep: closing tx {txid_str} not confirmed yet");
+                })?;
             let update_res = self
                 .rgb_wallet_wrapper
                 .update_witnesses(
-                    closing_height.unwrap(),
-                    vec![RgbTxid::from_str(&txid_str).unwrap()],
+                    closing_height,
+                    vec![RgbTxid::from_str(&txid_str).expect("valid txid")],
                 )
-                .unwrap();
+                .map_err(|e| {
+                    tracing::error!("sweep: cannot update witnesses for {txid_str}: {e}");
+                })?;
             if !update_res.failed.is_empty() {
+                tracing::error!("sweep: witness update failed for {txid_str}");
                 return Err(());
             }
 
             let contract_id = transfer_info.contract_id;
+
+            // Color with the amount actually sitting on the swept output.
+            // `transfer_info.rgb_amount` is the total claimable from the
+            // closing tx and also counts pending HTLCs, which ride their own
+            // outputs: using it here over-colors the sweep and rgb-lib
+            // rejects it (InvalidColoringInfo).
+            let amt_rgb = self
+                .rgb_wallet_wrapper
+                .get_outpoint_fungible_assignments(
+                    contract_id,
+                    rgb_lib::wallet::Outpoint {
+                        txid: txid_str.clone(),
+                        vout: outpoint.index as u32,
+                    },
+                )
+                .map_err(|e| {
+                    tracing::error!("sweep: cannot get assignments for {outpoint}: {e}");
+                })?;
+            if amt_rgb == 0 {
+                continue;
+            }
+
+            vanilla_descriptor = false;
 
             let mut new_asset = false;
             let recipient_id = if let Some((_, _, recipient_id)) = asset_info.get(&contract_id) {
@@ -3269,18 +3301,22 @@ impl OutputSpender for RgbOutputSpender {
                         vec![self.proxy_endpoint.clone()],
                         0,
                     )
-                    .unwrap();
+                    .map_err(|e| {
+                        tracing::error!("sweep: witness receive failed: {e}");
+                    })?;
                 let script_pubkey = script_buf_from_recipient_id(receive_data.recipient_id.clone())
-                    .unwrap()
-                    .unwrap();
+                    .map_err(|e| {
+                        tracing::error!("sweep: invalid recipient ID: {e}");
+                    })?
+                    .ok_or_else(|| {
+                        tracing::error!("sweep: recipient ID has no script");
+                    })?;
                 txouts.push(TxOut {
                     value: Amount::from_sat(DUST_LIMIT_MSAT / 1000),
                     script_pubkey,
                 });
                 receive_data.recipient_id
             };
-
-            let amt_rgb = transfer_info.rgb_amount;
 
             asset_info
                 .entry(contract_id)
@@ -3315,7 +3351,9 @@ impl OutputSpender for RgbOutputSpender {
                 feerate_sat_per_1000_weight,
                 locktime,
             )
-            .unwrap();
+            .map_err(|_| {
+                tracing::error!("sweep: cannot create spendable outputs PSBT");
+            })?;
 
         let mut asset_info_map = map![];
         for (contract_id, (vout, amt_rgb, _)) in asset_info.clone() {
@@ -3334,23 +3372,30 @@ impl OutputSpender for RgbOutputSpender {
             nonce: None,
         };
 
-        let mut psbt = RgbLibPsbt::from_str(&psbt.to_string()).unwrap();
+        let mut psbt = RgbLibPsbt::from_str(&psbt.to_string()).expect("valid PSBT");
         let consignments = self
             .rgb_wallet_wrapper
             .color_psbt_and_consume(&mut psbt, coloring_info)
-            .unwrap();
+            .map_err(|e| {
+                tracing::error!("sweep: cannot color the sweep PSBT: {e}");
+            })?;
 
-        let mut psbt = Psbt::from_str(&psbt.to_string()).expect("valid transaction");
+        let mut psbt = Psbt::from_str(&psbt.to_string()).expect("valid PSBT");
 
         psbt = self
             .signer
             .sign_spendable_outputs_psbt(descriptors, psbt, secp_ctx)
-            .unwrap();
+            .map_err(|_| {
+                tracing::error!("sweep: cannot sign the sweep PSBT");
+            })?;
 
         let spending_tx = match psbt.extract_tx() {
             Ok(tx) => tx,
             Err(ExtractTxError::MissingInputValue { tx }) => tx,
-            Err(e) => panic!("should never happen: {e}"),
+            Err(e) => {
+                tracing::error!("sweep: cannot extract the sweep tx: {e}");
+                return Err(());
+            }
         };
 
         let closing_txid = spending_tx.compute_txid().to_string();
@@ -3368,11 +3413,13 @@ impl OutputSpender for RgbOutputSpender {
                 .static_state
                 .ldk_data_dir
                 .join(format!("consignment_{}", closing_txid.clone()));
-            consignment
-                .save_file(&consignment_path)
-                .expect("successful save");
+            consignment.save_file(&consignment_path).map_err(|e| {
+                tracing::error!("sweep: cannot save consignment: {e}");
+            })?;
             let proxy_url = TransportEndpoint::new(self.proxy_endpoint.clone())
-                .unwrap()
+                .map_err(|e| {
+                    tracing::error!("sweep: invalid proxy endpoint: {e}");
+                })?
                 .endpoint;
             let rgb_wallet_wrapper_copy = self.rgb_wallet_wrapper.clone();
             let closing_txid_copy = closing_txid.clone();
@@ -3397,13 +3444,19 @@ impl OutputSpender for RgbOutputSpender {
                     return Err(());
                 }
             }
-            fs::remove_file(&consignment_path).unwrap();
+            let _ = fs::remove_file(&consignment_path);
         }
 
         txes.insert(descriptors_hash, spending_tx.clone());
-        self.kv_store
+        // The tx is already built and its consignments posted: a failed cache
+        // persist must not fail the sweep (the in-memory cache still covers
+        // this run).
+        if let Err(e) = self
+            .kv_store
             .write("", "", OUTPUT_SPENDER_TXES_KEY, txes.encode())
-            .unwrap();
+        {
+            tracing::warn!("sweep: cannot persist output spender txes: {e}");
+        }
 
         Ok(spending_tx)
     }

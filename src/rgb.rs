@@ -19,8 +19,8 @@ use rgb_lib::{
     wallet::{
         rust_only::{check_proxy_url, ColoringInfo},
         AssetCFA, AssetIFA, AssetNIA, AssetUDA, Assets, Balance, BtcBalance, Metadata, Online,
-        OperationResult, ReceiveData, Recipient, RefreshFilter, RefreshResult, RgbWalletOpsOffline,
-        RgbWalletOpsOnline, SendBeginResult, SinglesigKeys, SyncOptions,
+        OperationResult, Outpoint, ReceiveData, Recipient, RefreshFilter, RefreshResult,
+        RgbWalletOpsOffline, RgbWalletOpsOnline, SendBeginResult, SinglesigKeys, SyncOptions,
         Transaction as RgbLibTransaction, Transfer, TransportEndpoint, Unspent,
         Wallet as RgbLibWallet,
     },
@@ -821,6 +821,15 @@ impl RgbLibWalletWrapper {
         let online = if skip_sync { None } else { Some(self.online) };
         self.get_rgb_wallet()
             .list_unspents(online, settled_only, skip_sync)
+    }
+
+    pub(crate) fn get_outpoint_fungible_assignments(
+        &self,
+        contract_id: ContractId,
+        outpoint: Outpoint,
+    ) -> Result<u64, RgbLibError> {
+        self.get_rgb_wallet()
+            .get_outpoint_fungible_assignments(contract_id, outpoint)
     }
 
     pub(crate) fn post_consignment<P: AsRef<Path>>(
