@@ -117,6 +117,7 @@ pub(crate) struct TomlVss {
     pub(crate) url: Option<String>,
     pub(crate) allow_http: Option<bool>,
     pub(crate) allow_empty_restore: Option<bool>,
+    pub(crate) accept_inconsistent_restore: Option<bool>,
     pub(crate) retry_backoff_ms: Option<u64>,
     pub(crate) retry_max_attempts: Option<u32>,
     pub(crate) retry_max_total_delay_secs: Option<u64>,

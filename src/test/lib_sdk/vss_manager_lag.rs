@@ -401,8 +401,11 @@ fn restore_refuses_when_final_flush_fails() {
     let shutdown_started = std::time::Instant::now();
     setup.node_a.shutdown();
     let shutdown_elapsed = shutdown_started.elapsed();
+    // Margin for timer coarseness below the configured flush timeout.
+    let min_flush_wait =
+        rgb_lightning_node::BP_SHUTDOWN_FLUSH_TIMEOUT.saturating_sub(Duration::from_secs(5));
     assert!(
-        shutdown_elapsed >= Duration::from_secs(25),
+        shutdown_elapsed >= min_flush_wait,
         "shutdown must have waited for the bounded flush (took {shutdown_elapsed:?})"
     );
     setup.proxy.allow_all();
@@ -439,7 +442,7 @@ fn restore_refuses_when_final_flush_fails() {
     // The explicit override accepts the force-close: unlock proceeds and the
     // channel is gone, proving the refusal above was the consistency guard.
     fs::remove_dir_all(&setup.node_a_dir).expect("wipe refused node dir");
-    let node_a = make_node_with_vss_allow_empty(
+    let node_a = make_node_with_vss_accept_inconsistent(
         &setup.node_a_dir,
         NODE_A_DAEMON_PORT + NODE_A_PORT_OFFSET,
         NODE_A_PEER_PORT + NODE_A_PORT_OFFSET,
@@ -455,7 +458,7 @@ fn restore_refuses_when_final_flush_fails() {
         .expect("override clear fence");
     node_a
         .unlock(unlock_request(PASSWORD_A))
-        .expect("unlock with --vss-allow-empty-restore must proceed");
+        .expect("unlock with --vss-accept-inconsistent-restore must proceed");
     assert!(
         node_a
             .list_channels()

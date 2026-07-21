@@ -683,6 +683,7 @@ pub struct SdkInitRequest {
     pub vss_url: Option<String>,
     pub vss_allow_http: bool,
     pub vss_allow_empty_restore: bool,
+    pub vss_accept_inconsistent_restore: bool,
     pub reuse_addresses: bool,
 }
 

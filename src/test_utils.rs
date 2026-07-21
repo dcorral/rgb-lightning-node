@@ -38,6 +38,7 @@ pub fn mock_locked_app_state() -> TestAppState {
             lsp_bearer_token: None,
             vss_url: None,
             vss_allow_empty_restore: false,
+            vss_accept_inconsistent_restore: false,
             reuse_addresses: false,
             remote_signer_listen_addr: None,
         }),

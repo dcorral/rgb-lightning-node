@@ -247,10 +247,10 @@ pub(crate) fn make_node_with_vss(
     )
 }
 
-/// Like [`make_node_with_vss`] but with `--vss-allow-empty-restore`: the
-/// operator's escape hatch for restores refused as inconsistent.
+/// Like [`make_node_with_vss`] but with `--vss-accept-inconsistent-restore`:
+/// the operator's escape hatch for restores refused as inconsistent.
 #[allow(dead_code)] // used by VSS-only tests
-pub(crate) fn make_node_with_vss_allow_empty(
+pub(crate) fn make_node_with_vss_accept_inconsistent(
     storage_dir_path: &Path,
     daemon_listening_port: u16,
     ldk_peer_listening_port: u16,
@@ -269,7 +269,8 @@ pub(crate) fn make_node_with_vss_allow_empty(
         lsp_bearer_token: None,
         vss_url: Some(vss_url.to_string()),
         vss_allow_http: true,
-        vss_allow_empty_restore: true,
+        vss_allow_empty_restore: false,
+        vss_accept_inconsistent_restore: true,
         reuse_addresses: false,
     })
     .expect("create SDK node")
@@ -299,6 +300,7 @@ pub(crate) fn make_node_with_virtual(
         vss_url: None,
         vss_allow_http: true,
         vss_allow_empty_restore: false,
+        vss_accept_inconsistent_restore: false,
         reuse_addresses: false,
     })
     .expect("create SDK node")
@@ -324,6 +326,7 @@ fn make_node_inner(
         vss_url,
         vss_allow_http: true,
         vss_allow_empty_restore: false,
+        vss_accept_inconsistent_restore: false,
         reuse_addresses: false,
     })
     .expect("create SDK node")

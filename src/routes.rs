@@ -5474,6 +5474,7 @@ mod external_signer_auth_tests {
                 lsp_bearer_token: None,
                 vss_url: None,
                 vss_allow_empty_restore: false,
+                vss_accept_inconsistent_restore: false,
                 reuse_addresses: false,
                 remote_signer_listen_addr,
             }),

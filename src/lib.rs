@@ -43,6 +43,8 @@ mod utils;
 #[cfg(feature = "vss")]
 mod vss_kv_store;
 
+#[cfg(all(feature = "vss", feature = "test-utils"))]
+pub use ldk::BP_SHUTDOWN_FLUSH_TIMEOUT;
 pub use node::{NodeConfig, NodeHandle};
 
 /// Restricted-permission file/dir helpers for the `rln-signer-daemon` binary:

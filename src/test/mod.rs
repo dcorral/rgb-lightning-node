@@ -113,6 +113,7 @@ impl Default for UserArgs {
             lsp_bearer_token: None,
             vss_url: None,
             vss_allow_empty_restore: false,
+            vss_accept_inconsistent_restore: false,
             reuse_addresses: false,
             remote_signer_listen_addr: None,
             config: Default::default(),

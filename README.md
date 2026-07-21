@@ -468,6 +468,10 @@ Options:
   of aborting unlock. **Use with care:** starting fresh with no channel
   monitors can lose funds if the node had active channels. The default
   (abort on restore failure) is the safe choice.
+- `--vss-accept-inconsistent-restore` — proceed with a restore whose channel
+  manager lags the channel monitors. **Use with care:** the affected channels
+  are force-closed on unlock. By default such a restore is refused with an
+  explicit error so the operator can decide.
 
 ### Encryption
 

@@ -20,6 +20,7 @@ pub struct NodeConfig {
     pub lsp_bearer_token: Option<String>,
     pub vss_url: Option<String>,
     pub vss_allow_empty_restore: bool,
+    pub vss_accept_inconsistent_restore: bool,
     pub reuse_addresses: bool,
     /// Socket address of the remote external signer daemon to connect to (Option A). Required to
     /// unlock in external-signer mode — without it, `NodeHandle`-embedding callers can configure
@@ -58,6 +59,7 @@ impl NodeHandle {
             lsp_bearer_token: config.lsp_bearer_token,
             vss_url: config.vss_url,
             vss_allow_empty_restore: config.vss_allow_empty_restore,
+            vss_accept_inconsistent_restore: config.vss_accept_inconsistent_restore,
             reuse_addresses: config.reuse_addresses,
             remote_signer_listen_addr: config.remote_signer_listen_addr,
             config: Default::default(),
@@ -110,6 +112,7 @@ mod tests {
             lsp_bearer_token: None,
             vss_url: None,
             vss_allow_empty_restore: false,
+            vss_accept_inconsistent_restore: false,
             reuse_addresses: false,
             remote_signer_listen_addr: Some(addr),
         })

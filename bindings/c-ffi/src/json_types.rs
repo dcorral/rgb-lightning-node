@@ -134,6 +134,8 @@ pub(crate) struct JsonSdkInitRequest {
     #[serde(default)]
     pub vss_allow_empty_restore: bool,
     #[serde(default)]
+    pub vss_accept_inconsistent_restore: bool,
+    #[serde(default)]
     pub reuse_addresses: bool,
 }
 
@@ -157,6 +159,7 @@ impl TryFrom<JsonSdkInitRequest> for SdkInitRequest {
             vss_url: j.vss_url,
             vss_allow_http: j.vss_allow_http,
             vss_allow_empty_restore: j.vss_allow_empty_restore,
+            vss_accept_inconsistent_restore: j.vss_accept_inconsistent_restore,
             reuse_addresses: j.reuse_addresses,
         })
     }

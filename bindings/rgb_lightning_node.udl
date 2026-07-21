@@ -574,6 +574,7 @@ dictionary SdkInitRequest {
     string? vss_url = null;
     boolean vss_allow_http = false;
     boolean vss_allow_empty_restore = false;
+    boolean vss_accept_inconsistent_restore = false;
     boolean reuse_addresses = false;
 };
 

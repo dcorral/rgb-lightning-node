@@ -84,6 +84,13 @@ struct Args {
     #[arg(long, default_value_t = false)]
     vss_allow_empty_restore: bool,
 
+    /// On a fresh-device VSS restore, proceed even when the restored channel
+    /// manager lags the restored channel monitors. **Use with care:** the
+    /// affected channels are force-closed on unlock. Without this flag such a
+    /// restore is refused so the operator can decide.
+    #[arg(long, default_value_t = false)]
+    vss_accept_inconsistent_restore: bool,
+
     /// Reuse a pinned wallet address instead of generating a fresh one on each
     /// `/address` call.
     ///
@@ -115,6 +122,7 @@ pub(crate) struct UserArgs {
     pub(crate) lsp_bearer_token: Option<String>,
     pub(crate) vss_url: Option<String>,
     pub(crate) vss_allow_empty_restore: bool,
+    pub(crate) vss_accept_inconsistent_restore: bool,
     pub(crate) reuse_addresses: bool,
     /// `None` when the `remote-signer` feature isn't compiled in — always present so downstream
     /// structs and their (many) test constructors don't need to repeat `#[cfg(feature =
@@ -226,6 +234,8 @@ fn resolve_user_args(
     let vss_allow_http = args.vss_allow_http || vss.allow_http.unwrap_or(false);
     let vss_allow_empty_restore =
         args.vss_allow_empty_restore || vss.allow_empty_restore.unwrap_or(false);
+    let vss_accept_inconsistent_restore =
+        args.vss_accept_inconsistent_restore || vss.accept_inconsistent_restore.unwrap_or(false);
     // Reject http:// URLs unless the host is loopback or allow_http is set.
     if let Some(url) = &vss_url {
         crate::utils::validate_vss_url(url, vss_allow_http)?;
@@ -253,6 +263,7 @@ fn resolve_user_args(
         lsp_bearer_token,
         vss_url,
         vss_allow_empty_restore,
+        vss_accept_inconsistent_restore,
         reuse_addresses,
         remote_signer_listen_addr,
         config,
@@ -296,6 +307,7 @@ mod tests {
         assert!(ua.lsp_base_url.is_none());
         assert!(ua.vss_url.is_none());
         assert!(!ua.vss_allow_empty_restore);
+        assert!(!ua.vss_accept_inconsistent_restore);
         assert!(!ua.reuse_addresses);
         assert_eq!(ua.config, crate::config::Config::default());
     }
@@ -373,11 +385,12 @@ mod tests {
     fn vss_http_from_file_allowed_with_allow_http() {
         let ua = resolve(
             &base(&[]),
-            "[vss]\nurl = \"http://example.com/vss\"\nallow_http = true\nallow_empty_restore = true\n",
+            "[vss]\nurl = \"http://example.com/vss\"\nallow_http = true\nallow_empty_restore = true\naccept_inconsistent_restore = true\n",
         )
         .unwrap();
         assert_eq!(ua.vss_url.as_deref(), Some("http://example.com/vss"));
         assert!(ua.vss_allow_empty_restore);
+        assert!(ua.vss_accept_inconsistent_restore);
     }
 
     #[test]

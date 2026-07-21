@@ -1,15 +1,9 @@
-use bitcoin::Network;
 use chrono::Utc;
-use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringDecayParameters};
 use lightning::util::logger::{Logger, Record};
-use lightning::util::ser::{ReadableArgs, Writer};
+use lightning::util::ser::Writer;
 use std::fs;
-use std::fs::File;
-use std::io::BufReader;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::PathBuf;
 
-use crate::ldk::NetworkGraph;
 use crate::utils::LOGS_DIR;
 
 pub(crate) const LDK_LOGS_FILE: &str = "logs.txt";
@@ -51,32 +45,4 @@ impl Logger for FilesystemLogger {
             .write_all(log.as_bytes())
             .unwrap();
     }
-}
-
-pub(crate) fn read_network(
-    path: &Path,
-    network: Network,
-    logger: Arc<FilesystemLogger>,
-) -> NetworkGraph {
-    if let Ok(file) = File::open(path) {
-        if let Ok(graph) = NetworkGraph::read(&mut BufReader::new(file), logger.clone()) {
-            return graph;
-        }
-    }
-    NetworkGraph::new(network, logger)
-}
-
-pub(crate) fn read_scorer(
-    path: &Path,
-    graph: Arc<NetworkGraph>,
-    logger: Arc<FilesystemLogger>,
-) -> ProbabilisticScorer<Arc<NetworkGraph>, Arc<FilesystemLogger>> {
-    let params = ProbabilisticScoringDecayParameters::default();
-    if let Ok(file) = File::open(path) {
-        let args = (params, Arc::clone(&graph), Arc::clone(&logger));
-        if let Ok(scorer) = ProbabilisticScorer::read(&mut BufReader::new(file), args) {
-            return scorer;
-        }
-    }
-    ProbabilisticScorer::new(params, graph, logger)
 }

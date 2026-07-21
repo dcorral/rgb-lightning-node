@@ -40,7 +40,9 @@ use lightning::rgb_utils::{RgbPaymentInfo, STATIC_BLINDING};
 use lightning::routing::gossip;
 use lightning::routing::gossip::NodeId;
 use lightning::routing::router::DefaultRouter;
-use lightning::routing::scoring::{ProbabilisticScorer, ProbabilisticScoringFeeParameters};
+use lightning::routing::scoring::{
+    ProbabilisticScorer, ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters,
+};
 use lightning::sign::{KeysManager, OutputSpender, SpendableOutputDescriptor};
 // Used by the non-VSS ChainMonitor encryptor closure and the signer unit tests.
 #[cfg(feature = "vss")]
@@ -63,8 +65,11 @@ use lightning::util::persist::MonitorUpdatingPersister;
 use lightning::util::persist::MonitorUpdatingPersisterAsync;
 use lightning::util::persist::{
     KVStoreSync, CHANNEL_MANAGER_PERSISTENCE_KEY, CHANNEL_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-    CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, OUTPUT_SWEEPER_PERSISTENCE_KEY,
-    OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE, OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE,
+    CHANNEL_MANAGER_PERSISTENCE_SECONDARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_KEY,
+    NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE, NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
+    OUTPUT_SWEEPER_PERSISTENCE_KEY, OUTPUT_SWEEPER_PERSISTENCE_PRIMARY_NAMESPACE,
+    OUTPUT_SWEEPER_PERSISTENCE_SECONDARY_NAMESPACE, SCORER_PERSISTENCE_KEY,
+    SCORER_PERSISTENCE_PRIMARY_NAMESPACE, SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
 };
 use lightning::util::ser::{Readable, ReadableArgs, Writeable};
 use lightning::util::sweep as ldk_sweep;
@@ -122,7 +127,7 @@ use crate::bitcoind::BitcoindClient;
 use crate::chain_backend::ChainBackend;
 use crate::core_types::{HTLCStatus, NodeKeySource, SwapStatus, UnlockRequest};
 use crate::database::RlnDatabase;
-use crate::disk::{self, FilesystemLogger};
+use crate::disk::FilesystemLogger;
 use crate::gossip::{GossipSource, GossipSourceConfig};
 use crate::indexer::{ElectrumIndexerClient, EsploraIndexerClient};
 
@@ -4272,20 +4277,50 @@ pub(crate) async fn start_ldk(
         (chain_monitor, channelmonitors)
     };
 
-    // Initialize routing ProbabilisticScorer
-    let network_graph_path = ldk_data_dir.join("network_graph");
-    let network_graph = Arc::new(disk::read_network(
-        &network_graph_path,
-        network,
-        logger.clone(),
-    ));
+    // Network graph and scorer are persisted to the local KV store by the
+    // background processor; fall back to fresh instances on first start or
+    // decode failure (both rebuild from gossip).
+    let network_graph = Arc::new(
+        match kv_store.read(
+            NETWORK_GRAPH_PERSISTENCE_PRIMARY_NAMESPACE,
+            NETWORK_GRAPH_PERSISTENCE_SECONDARY_NAMESPACE,
+            NETWORK_GRAPH_PERSISTENCE_KEY,
+        ) {
+            Ok(bytes) => NetworkGraph::read(&mut &bytes[..], Arc::clone(&logger))
+                .unwrap_or_else(|_| NetworkGraph::new(network, Arc::clone(&logger))),
+            Err(_) => NetworkGraph::new(network, Arc::clone(&logger)),
+        },
+    );
 
-    let scorer_path = ldk_data_dir.join("scorer");
-    let scorer = Arc::new(RwLock::new(disk::read_scorer(
-        &scorer_path,
-        Arc::clone(&network_graph),
-        Arc::clone(&logger),
-    )));
+    let scoring_decay_params = ProbabilisticScoringDecayParameters::default();
+    let scorer = Arc::new(RwLock::new(
+        match kv_store.read(
+            SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
+            SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+            SCORER_PERSISTENCE_KEY,
+        ) {
+            Ok(bytes) => ProbabilisticScorer::read(
+                &mut &bytes[..],
+                (
+                    scoring_decay_params,
+                    Arc::clone(&network_graph),
+                    Arc::clone(&logger),
+                ),
+            )
+            .unwrap_or_else(|_| {
+                ProbabilisticScorer::new(
+                    scoring_decay_params,
+                    Arc::clone(&network_graph),
+                    Arc::clone(&logger),
+                )
+            }),
+            Err(_) => ProbabilisticScorer::new(
+                scoring_decay_params,
+                Arc::clone(&network_graph),
+                Arc::clone(&logger),
+            ),
+        },
+    ));
 
     // Create Routers
     let scoring_fee_params = ProbabilisticScoringFeeParameters::default();
@@ -4407,11 +4442,11 @@ pub(crate) async fn start_ldk(
             .map(|(_, m)| m.channel_id().to_string())
             .collect();
         if !lost_channels.is_empty() {
-            if static_state.vss_allow_empty_restore {
-                tracing::warn!(
+            if static_state.vss_accept_inconsistent_restore {
+                tracing::error!(
                     channels = ?lost_channels,
                     "restored channel manager lags the restored monitors; proceeding due to \
-                     --vss-allow-empty-restore — these channels WILL be force-closed"
+                     --vss-accept-inconsistent-restore — these channels WILL be force-closed"
                 );
             } else {
                 // Drop the restored manager so the next unlock re-runs restore + guard.
@@ -4425,8 +4460,9 @@ pub(crate) async fn start_ldk(
                 return Err(APIError::FailedVssInit(format!(
                     "VSS restore is inconsistent: the restored channel manager does not know \
                      channel(s) {lost_channels:?} that the restored channel monitors consider \
-                     open. Unlocking would force-close them. Pass --vss-allow-empty-restore \
-                     to proceed anyway and accept the force-close."
+                     open. Unlocking would force-close them. Pass \
+                     --vss-accept-inconsistent-restore to proceed anyway and accept the \
+                     force-close."
                 )));
             }
         }
@@ -5252,6 +5288,26 @@ pub(crate) async fn start_ldk(
         },
     ));
 
+    // Periodically drain queued VSS replications so an idle node still heals
+    // after an outage (drains are otherwise only triggered by new writes).
+    #[cfg(feature = "vss")]
+    if static_state.vss_url.is_some() {
+        let drain_store = Arc::clone(&kv_store);
+        let stop_drain = Arc::clone(&stop_processing);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                if stop_drain.load(Ordering::Acquire) {
+                    break;
+                }
+                let store = Arc::clone(&drain_store);
+                let _ = tokio::task::spawn_blocking(move || store.drain_pending()).await;
+            }
+        });
+    }
+
     // Regularly reconnect to channel peers.
     let connect_cm = Arc::clone(&channel_manager);
     let connect_pm = Arc::clone(&peer_manager);
@@ -5507,7 +5563,7 @@ impl AppState {
 }
 
 #[cfg(feature = "vss")]
-const BP_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(30);
+pub const BP_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(feature = "vss")]
 fn log_bp_shutdown_result(res: Result<Result<(), io::Error>, tokio::task::JoinError>) {
@@ -5565,9 +5621,27 @@ pub(crate) async fn stop_ldk(app_state: Arc<AppState>) {
     #[cfg(feature = "vss")]
     {
         if let Some((kv_store, monitor_kv_store)) = stores {
-            // Abort outage-pending monitor writes before giving up the fence:
-            // a retry landing after another instance owns the store would
-            // corrupt its state.
+            // Best-effort flush of queued replications before the fence goes.
+            let flush_store = Arc::clone(&kv_store);
+            let flush = tokio::task::spawn_blocking(move || {
+                flush_store.flush_pending_until(std::time::Instant::now() + Duration::from_secs(10))
+            });
+            match flush.await {
+                Ok(0) => {}
+                Ok(n) => tracing::error!(
+                    pending = n,
+                    "VSS replications still queued at shutdown; they persist locally and \
+                     will retry on next unlock"
+                ),
+                Err(e) => tracing::warn!(error = %e, "pending-queue flush task failed"),
+            }
+            // Stop drains and abort outage-pending monitor writes before
+            // giving up the fence: a write landing after another instance
+            // owns the store would corrupt its state.
+            let stop_store = Arc::clone(&kv_store);
+            if let Err(e) = tokio::task::spawn_blocking(move || stop_store.stop()).await {
+                tracing::warn!(error = %e, "pending-queue stop task failed");
+            }
             monitor_kv_store.stop();
             match tokio::task::spawn_blocking(move || kv_store.release_vss_fence_if_owned()).await {
                 Ok(Ok(())) => {}

@@ -727,7 +727,8 @@ impl KVStoreSync for VssKvStore {
         // Use non-conditional writes (version = -1) so high-frequency monitor
         // updates don't fail on version conflicts. Concurrent writer safety
         // is provided by [`acquire_fence`] + periodic re-checks rather than
-        // by VSS's optimistic locking.
+        // by VSS's optimistic locking; same-process write ordering is
+        // serialized per key by the callers.
         let request = PutObjectRequest {
             store_id: self.store_id.clone(),
             global_version: None,
