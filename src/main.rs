@@ -2,10 +2,13 @@ mod args;
 mod auth;
 mod backup;
 mod bitcoind;
+mod database;
 mod disk;
 mod error;
+mod kv_store;
 mod ldk;
 mod rgb;
+mod rgb_file_transfer;
 mod routes;
 mod swap;
 mod utils;
@@ -41,16 +44,19 @@ use crate::args::UserArgs;
 use crate::auth::conditional_auth_middleware;
 use crate::error::AppError;
 use crate::ldk::stop_ldk;
+use crate::rgb_file_transfer::MAX_CONSIGNMENT_SIZE;
 use crate::routes::{
     address, asset_balance, asset_metadata, backup, btc_balance, change_password,
     check_indexer_url, check_proxy_endpoint, close_channel, connect_peer, create_utxos,
-    decode_ln_invoice, decode_rgb_invoice, disconnect_peer, estimate_fee, fail_transfers,
-    get_asset_media, get_channel_id, get_payment, get_swap, init, invoice_status, issue_asset_cfa,
-    issue_asset_nia, issue_asset_uda, keysend, list_assets, list_channels, list_payments,
-    list_peers, list_swaps, list_transactions, list_transfers, list_unspents, ln_invoice, lock,
-    maker_execute, maker_init, network_info, node_info, open_channel, post_asset_media,
-    refresh_transfers, restore, revoke_token, rgb_invoice, send_btc, send_onion_message,
-    send_payment, send_rgb, shutdown, sign_message, sync, taker, unlock,
+    decode_ln_invoice, decode_rgb_invoice, decode_swapstring, disconnect_peer, estimate_fee,
+    fail_transfers, get_asset_media, get_channel_id, get_consignment, get_payment, get_swap,
+    inflate, init, invoice_status, issue_asset_cfa, issue_asset_ifa, issue_asset_nia,
+    issue_asset_uda, keysend, list_assets, list_channels, list_payments, list_peers, list_swaps,
+    list_transactions, list_transfers, list_unspents, ln_invoice, lock, maker_execute, maker_init,
+    network_info, node_info, open_channel, post_asset_media, provide_out_of_band_ack,
+    provide_out_of_band_consignment, refresh_transfers, restore, revoke_token, rgb_invoice,
+    send_btc, send_onion_message, send_payment, send_rgb, shutdown, sign_message, sync, taker,
+    unlock,
 };
 use crate::utils::{start_daemon, AppState, LOGS_DIR};
 
@@ -102,6 +108,13 @@ pub(crate) async fn app(args: UserArgs) -> Result<(Router, Arc<AppState>), AppEr
                 args.max_media_upload_size_mb as usize * 1024 * 1024,
             )),
         )
+        .route(
+            "/provideoutofbandconsignment",
+            post(provide_out_of_band_consignment).layer(RequestBodyLimitLayer::new(
+                args.max_aggregated_media_size_per_channel_mb as usize * 1024 * 1024
+                    + MAX_CONSIGNMENT_SIZE,
+            )),
+        )
         // all routes before this will have the default body limit disabled
         .layer(DefaultBodyLimit::disable())
         .route("/address", post(address))
@@ -117,16 +130,20 @@ pub(crate) async fn app(args: UserArgs) -> Result<(Router, Arc<AppState>), AppEr
         .route("/createutxos", post(create_utxos))
         .route("/decodelninvoice", post(decode_ln_invoice))
         .route("/decodergbinvoice", post(decode_rgb_invoice))
+        .route("/decodeswapstring", post(decode_swapstring))
         .route("/disconnectpeer", post(disconnect_peer))
         .route("/estimatefee", post(estimate_fee))
         .route("/failtransfers", post(fail_transfers))
         .route("/getassetmedia", post(get_asset_media))
         .route("/getchannelid", post(get_channel_id))
+        .route("/getconsignment", post(get_consignment))
         .route("/getpayment", post(get_payment))
         .route("/getswap", post(get_swap))
+        .route("/inflate", post(inflate))
         .route("/init", post(init))
         .route("/invoicestatus", post(invoice_status))
         .route("/issueassetcfa", post(issue_asset_cfa))
+        .route("/issueassetifa", post(issue_asset_ifa))
         .route("/issueassetnia", post(issue_asset_nia))
         .route("/issueassetuda", post(issue_asset_uda))
         .route("/keysend", post(keysend))
@@ -145,6 +162,7 @@ pub(crate) async fn app(args: UserArgs) -> Result<(Router, Arc<AppState>), AppEr
         .route("/networkinfo", get(network_info))
         .route("/nodeinfo", get(node_info))
         .route("/openchannel", post(open_channel))
+        .route("/provideoutofbandack", post(provide_out_of_band_ack))
         .route("/refreshtransfers", post(refresh_transfers))
         .route("/restore", post(restore))
         .route("/revoketoken", post(revoke_token))

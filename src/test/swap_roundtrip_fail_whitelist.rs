@@ -1,11 +1,3 @@
-use crate::disk::LDK_LOGS_FILE;
-use crate::utils::LDK_DIR;
-use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-    path::PathBuf,
-};
-
 use super::*;
 
 const TEST_DIR_BASE: &str = "tmp/swap_roundtrip_fail_whitelist/";
@@ -97,19 +89,10 @@ async fn swap_fail_whitelist() {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 
-    let file = File::open(
-        PathBuf::from(test_dir_node1)
-            .join(LDK_DIR)
-            .join(LOGS_DIR)
-            .join(LDK_LOGS_FILE),
-    )
-    .unwrap();
-    let reader = BufReader::new(file);
-
-    // check the payment failed for the correc reason
+    // check the payment failed for the correct reason
     let mut found_log = false;
-    for line in reader.lines() {
-        if line.unwrap().contains("rejecting non-Waiting swap") {
+    for line in ldk_log_lines(&test_dir_node1) {
+        if line.contains("rejecting non-Waiting swap") {
             found_log = true;
             break;
         }

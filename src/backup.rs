@@ -13,8 +13,10 @@ use std::fs::{create_dir_all, read_to_string, remove_file, write, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, Statement};
+
 use crate::error::APIError;
-use crate::utils::LOGS_DIR;
+use crate::utils::{DB_FILE_NAME, LOGS_DIR};
 
 const BACKUP_BUFFER_LEN_ENCRYPT: usize = 239; // 255 max, leaving 16 for the checksum
 const BACKUP_BUFFER_LEN_DECRYPT: usize = BACKUP_BUFFER_LEN_ENCRYPT + 16;
@@ -42,18 +44,19 @@ struct CypherSecrets {
 /// Scrypt is used for hashing and xchacha20poly1305 is used for encryption. A random salt for
 /// hashing and a random nonce for encrypting are randomly generated and included in the final
 /// backup file, along with the backup version
-pub(crate) fn do_backup(
+pub(crate) async fn do_backup(
     wallet_dir: &Path,
     backup_file: &Path,
     password: &str,
+    database: &DatabaseConnection,
 ) -> Result<(), APIError> {
     // setup
     tracing::info!("starting backup...");
     if backup_file.exists() {
         Err(APIError::InvalidBackupPath)?;
     }
-    let tmp_base_path = _get_parent_path(backup_file)?;
-    let files = _get_backup_paths(&tmp_base_path)?;
+    let tmp_base_path = get_parent_path(backup_file)?;
+    let files = get_backup_paths(&tmp_base_path)?;
     let salt: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
         .take(BACKUP_KEY_LENGTH)
@@ -67,20 +70,32 @@ pub(crate) fn do_backup(
         .collect();
     tracing::debug!("using generated nonce: {}", &nonce);
 
+    // snapshot the live DB transactionally; the live rln_db* files are skipped while zipping
+    let db_tempdir = tempfile::tempdir_in(&tmp_base_path)?;
+    let db_snapshot = db_tempdir.path().join(DB_FILE_NAME);
+    let vacuum_sql = format!(
+        "VACUUM INTO '{}'",
+        db_snapshot.display().to_string().replace('\'', "''")
+    );
+    database
+        .execute(Statement::from_string(DbBackend::Sqlite, vacuum_sql))
+        .await
+        .map_err(|e| APIError::Unexpected(format!("Failed to snapshot database: {e}")))?;
+
     // create zip archive of wallet data
     tracing::debug!("\nzipping {:?} to {:?}", &wallet_dir, &files.zip);
-    _zip_dir(wallet_dir, &files.zip)?;
+    zip_dir(wallet_dir, &files.zip, Some(&db_snapshot))?;
 
     // encrypt the backup file
     tracing::debug!("\nencrypting {:?} to {:?}", &files.zip, &files.encrypted);
-    _encrypt_file(&files.zip, &files.encrypted, password, &salt, &nonce)?;
+    encrypt_file(&files.zip, &files.encrypted, password, &salt, &nonce)?;
 
     // add backup nonce + salt + version to final zip file
     write(files.nonce, nonce)?;
     write(files.salt, salt)?;
     write(files.version, BACKUP_VERSION.to_string())?;
     tracing::debug!("\nzipping {:?} to {:?}", &files.tempdir, &backup_file);
-    _zip_dir(files.tempdir.path(), backup_file)?;
+    zip_dir(files.tempdir.path(), backup_file, None)?;
 
     tracing::info!("backup completed");
     Ok(())
@@ -95,13 +110,13 @@ pub(crate) fn restore_backup(
     // setup
     tracing::info!("starting restore...");
     let backup_file = PathBuf::from(backup_path);
-    let tmp_base_path = _get_parent_path(&backup_file)?;
-    let files = _get_backup_paths(&tmp_base_path)?;
+    let tmp_base_path = get_parent_path(&backup_file)?;
+    let files = get_backup_paths(&tmp_base_path)?;
     let target_dir_path = PathBuf::from(&target_dir);
 
     // unpack given zip file and retrieve backup data
     tracing::info!("unzipping {:?}", backup_file);
-    _unzip(&backup_file, &PathBuf::from(files.tempdir.path()))?;
+    unzip(&backup_file, &PathBuf::from(files.tempdir.path()))?;
     let nonce = read_to_string(files.nonce)?;
     tracing::debug!("using retrieved nonce: {}", &nonce);
     let salt = read_to_string(files.salt)?;
@@ -118,15 +133,15 @@ pub(crate) fn restore_backup(
 
     // decrypt backup and restore files
     tracing::info!("decrypting {:?} to {:?}", files.encrypted, files.zip);
-    _decrypt_file(&files.encrypted, &files.zip, password, &salt, &nonce)?;
+    decrypt_file(&files.encrypted, &files.zip, password, &salt, &nonce)?;
     tracing::info!("unzipping {:?} to {:?}", &files.zip, &target_dir_path);
-    _unzip(&files.zip, &target_dir_path)?;
+    unzip(&files.zip, &target_dir_path)?;
 
     tracing::info!("restore completed");
     Ok(())
 }
 
-fn _get_backup_paths(tmp_base_path: &Path) -> Result<BackupPaths, APIError> {
+fn get_backup_paths(tmp_base_path: &Path) -> Result<BackupPaths, APIError> {
     create_dir_all(tmp_base_path)?;
     let tempdir = tempfile::tempdir_in(tmp_base_path)?;
     let encrypted = tempdir.path().join("backup.enc");
@@ -144,7 +159,7 @@ fn _get_backup_paths(tmp_base_path: &Path) -> Result<BackupPaths, APIError> {
     })
 }
 
-fn _get_parent_path(file: &Path) -> Result<PathBuf, APIError> {
+fn get_parent_path(file: &Path) -> Result<PathBuf, APIError> {
     if let Some(parent) = file.parent() {
         Ok(parent.to_path_buf())
     } else {
@@ -152,7 +167,7 @@ fn _get_parent_path(file: &Path) -> Result<PathBuf, APIError> {
     }
 }
 
-fn _zip_dir(path_in: &Path, path_out: &Path) -> Result<(), APIError> {
+fn zip_dir(path_in: &Path, path_out: &Path, db_snapshot: Option<&Path>) -> Result<(), APIError> {
     // setup
     let writer = File::create(path_out)?;
     let mut zip = zip::ZipWriter::new(writer);
@@ -171,6 +186,12 @@ fn _zip_dir(path_in: &Path, path_out: &Path) -> Result<(), APIError> {
             .ok_or_else(|| APIError::Unexpected(s!("Failed to convert file name to string")))?;
         if path.is_file() {
             if path.ends_with("log") {
+                continue;
+            }
+            // the live DB files are replaced by the transactional snapshot
+            if db_snapshot.is_some()
+                && (name_str == DB_FILE_NAME || name_str.starts_with(&format!("{DB_FILE_NAME}-")))
+            {
                 continue;
             }
             tracing::debug!("adding file {path:?} as {name:?}");
@@ -197,6 +218,23 @@ fn _zip_dir(path_in: &Path, path_out: &Path) -> Result<(), APIError> {
         }
     }
 
+    // append the DB snapshot under the canonical name
+    if let Some(db_snapshot) = db_snapshot {
+        tracing::debug!("adding DB snapshot {db_snapshot:?} as {DB_FILE_NAME:?}");
+        zip.start_file(DB_FILE_NAME, options).map_err(|e| {
+            APIError::Unexpected(format!("Failed creating file in the archive: {e}"))
+        })?;
+        let mut f = File::open(db_snapshot)?;
+        loop {
+            let read_count = f.read(&mut buffer)?;
+            if read_count != 0 {
+                zip.write_all(&buffer[..read_count])?;
+            } else {
+                break;
+            }
+        }
+    }
+
     // finalize
     let mut file = zip
         .finish()
@@ -207,7 +245,7 @@ fn _zip_dir(path_in: &Path, path_out: &Path) -> Result<(), APIError> {
     Ok(())
 }
 
-fn _unzip(zip_path: &PathBuf, path_out: &Path) -> Result<(), APIError> {
+fn unzip(zip_path: &PathBuf, path_out: &Path) -> Result<(), APIError> {
     // setup
     let file =
         File::open(zip_path).map_err(|e| APIError::Unexpected(format!("Failed to unzip: {e}")))?;
@@ -246,7 +284,7 @@ fn _unzip(zip_path: &PathBuf, path_out: &Path) -> Result<(), APIError> {
     Ok(())
 }
 
-fn _get_cypher_secrets(
+fn get_cypher_secrets(
     password: &str,
     salt_str: &str,
     nonce_str: &str,
@@ -275,14 +313,14 @@ fn _get_cypher_secrets(
     Ok(CypherSecrets { key, nonce })
 }
 
-fn _encrypt_file(
+fn encrypt_file(
     path_cleartext: &PathBuf,
     path_encrypted: &PathBuf,
     password: &str,
     salt_str: &str,
     nonce_str: &str,
 ) -> Result<(), APIError> {
-    let cypher_secrets = _get_cypher_secrets(password, salt_str, nonce_str)?;
+    let cypher_secrets = get_cypher_secrets(password, salt_str, nonce_str)?;
 
     // - XChacha20Poly1305 is fast, requires no special hardware and supports stream operation
     // - stream mode required as files to encrypt may be big, so avoiding a memory buffer
@@ -318,14 +356,14 @@ fn _encrypt_file(
     Ok(())
 }
 
-fn _decrypt_file(
+fn decrypt_file(
     path_encrypted: &PathBuf,
     path_cleartext: &PathBuf,
     password: &str,
     salt_str: &str,
     nonce_str: &str,
 ) -> Result<(), APIError> {
-    let cypher_secrets = _get_cypher_secrets(password, salt_str, nonce_str)?;
+    let cypher_secrets = get_cypher_secrets(password, salt_str, nonce_str)?;
 
     // setup
     let aead = XChaCha20Poly1305::new(&cypher_secrets.key);

@@ -44,8 +44,23 @@ pub enum APIError {
     #[error("Batch transfer cannot be set to failed status")]
     CannotFailBatchTransfer,
 
+    #[error("Cannot provide out-of-band ACK: {0}")]
+    CannotProvideOutOfBandAck(String),
+
+    #[error("Cannot provide out-of-band consignment: {0}")]
+    CannotProvideOutOfBandConsignment(String),
+
     #[error("Cannot call other APIs while node is changing state")]
     ChangingState,
+
+    #[error("Consignment file is empty")]
+    ConsignmentFileEmpty,
+
+    #[error("Consignment file has not been provided")]
+    ConsignmentFileNotProvided,
+
+    #[error("Consignment not found")]
+    ConsignmentNotFound,
 
     #[error("Another payment for this invoice is already in status {0}")]
     DuplicatePayment(String),
@@ -71,9 +86,6 @@ pub enum APIError {
     #[error("Failed to issue asset: {0}")]
     FailedIssuingAsset(String),
 
-    #[error("Unable to create keys seed file {0}: {1}")]
-    FailedKeysCreation(String, String),
-
     #[error("Failed to open channel: {0}")]
     FailedOpenChannel(String),
 
@@ -98,7 +110,7 @@ pub enum APIError {
     #[error("Insufficient capacity to cover the commitment transaction fees ({0} sat)")]
     InsufficientCapacity(u64),
 
-    #[error("Not enough funds, get an address and send {0} sats there")]
+    #[error("Not enough funds, missing {0} sats")]
     InsufficientFunds(u64),
 
     #[error("Invalid address: {0}")]
@@ -131,11 +143,17 @@ pub enum APIError {
     #[error("Invalid channel ID")]
     InvalidChannelID,
 
+    #[error("Invalid consignment")]
+    InvalidConsignment,
+
     #[error("Invalid details: {0}")]
     InvalidDetails(String),
 
     #[error("Trying to request fee estimation for an invalid block number")]
     InvalidEstimationBlocks,
+
+    #[error("Invalid expiration")]
+    InvalidExpiration,
 
     #[error("Invalid fee rate: {0}")]
     InvalidFeeRate(String),
@@ -176,9 +194,6 @@ pub enum APIError {
     #[error("Invalid precision: {0}")]
     InvalidPrecision(String),
 
-    #[error("Invalid proxy endpoint")]
-    InvalidProxyEndpoint,
-
     #[error("Invalid proxy protocol version: {0}")]
     InvalidProxyProtocol(String),
 
@@ -190,6 +205,9 @@ pub enum APIError {
 
     #[error("The provided recipient ID is neither a blinded UTXO or a script")]
     InvalidRecipientID,
+
+    #[error("The provided recipient map is invalid")]
+    InvalidRecipientMap,
 
     #[error("The provided recipient ID is for a different network than the wallet's one")]
     InvalidRecipientNetwork,
@@ -254,9 +272,6 @@ pub enum APIError {
     #[error("No valid transport endpoint found")]
     NoValidTransportEndpoint,
 
-    #[error("Cannot perform this operation while an open channel operation is in progress")]
-    OpenChannelInProgress,
-
     #[error("Output below the dust limit")]
     OutputBelowDustLimit,
 
@@ -293,6 +308,9 @@ pub enum APIError {
     #[error("The provided backup has an unsupported version: {version}")]
     UnsupportedBackupVersion { version: String },
 
+    #[error("Inflation is not supported by schema {0}")]
+    UnsupportedInflation(String),
+
     #[error("Layer 1 {0} is not supported")]
     UnsupportedLayer1(String),
 
@@ -303,16 +321,22 @@ pub enum APIError {
     WrongPassword,
 }
 
+pub(crate) fn error_name(e: &impl std::error::Error) -> String {
+    format!("{e:?}")
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect()
+}
+
 impl APIError {
-    fn name(&self) -> String {
-        format!("{self:?}")
-            .split('(')
-            .next()
-            .unwrap()
-            .split(" {")
-            .next()
-            .unwrap()
-            .to_string()
+    pub(crate) fn name(&self) -> String {
+        error_name(self)
+    }
+}
+
+impl From<sea_orm::DbErr> for APIError {
+    fn from(err: sea_orm::DbErr) -> Self {
+        APIError::IO(std::io::Error::other(format!("database error: {err}")))
     }
 }
 
@@ -336,6 +360,12 @@ impl From<RgbLibError> for APIError {
             RgbLibError::BatchTransferNotFound { .. } => APIError::BatchTransferNotFound,
             RgbLibError::CannotEstimateFees => APIError::CannotEstimateFees,
             RgbLibError::CannotFailBatchTransfer => APIError::CannotFailBatchTransfer,
+            RgbLibError::CannotProvideOutOfBandAck { details } => {
+                APIError::CannotProvideOutOfBandAck(details)
+            }
+            RgbLibError::CannotProvideOutOfBandConsignment { details } => {
+                APIError::CannotProvideOutOfBandConsignment(details)
+            }
             RgbLibError::EmptyFile { .. } => APIError::MediaFileEmpty,
             RgbLibError::FailedBdkSync { details } => APIError::FailedBdkSync(details),
             RgbLibError::FailedBroadcast { details } => APIError::FailedBroadcast(details),
@@ -356,12 +386,12 @@ impl From<RgbLibError> for APIError {
             }
             RgbLibError::InvalidAddress { details } => APIError::InvalidAddress(details),
             RgbLibError::InvalidAmountZero => APIError::InvalidAmount(s!("0")),
-            RgbLibError::InvalidAssetID { asset_id } => APIError::InvalidAssetID(asset_id),
             RgbLibError::InvalidAssignment => APIError::InvalidAssignment,
             RgbLibError::InvalidAttachments { details } => APIError::InvalidAttachments(details),
             RgbLibError::InvalidDetails { details } => APIError::InvalidDetails(details),
             RgbLibError::InvalidElectrum { details } => APIError::InvalidIndexer(details),
             RgbLibError::InvalidEstimationBlocks => APIError::InvalidEstimationBlocks,
+            RgbLibError::InvalidExpiration => APIError::InvalidExpiration,
             RgbLibError::InvalidFeeRate { details } => APIError::InvalidFeeRate(details),
             RgbLibError::InvalidFilePath { .. } => APIError::MediaFileNotProvided,
             RgbLibError::InvalidIndexer { details } => APIError::InvalidIndexer(details),
@@ -375,6 +405,7 @@ impl From<RgbLibError> for APIError {
                 APIError::InvalidRecipientData(details)
             }
             RgbLibError::InvalidRecipientID => APIError::InvalidRecipientID,
+            RgbLibError::InvalidRecipientMap => APIError::InvalidRecipientMap,
             RgbLibError::InvalidRecipientNetwork => APIError::InvalidRecipientNetwork,
             RgbLibError::InvalidTicker { details } => APIError::InvalidTicker(details),
             RgbLibError::InvalidTransportEndpoint { details } => {
@@ -386,6 +417,9 @@ impl From<RgbLibError> for APIError {
             RgbLibError::MaxFeeExceeded { txid } => APIError::MaxFeeExceeded(txid),
             RgbLibError::MinFeeNotMet { txid } => APIError::MinFeeNotMet(txid),
             RgbLibError::Network { details } => APIError::Network(details),
+            RgbLibError::NoInflationAmounts => {
+                APIError::InvalidAmount(s!("inflation request with no amounts or zero amounts"))
+            }
             RgbLibError::NoIssuanceAmounts => {
                 APIError::InvalidAmount(s!("issuance request with no provided amounts"))
             }
@@ -393,8 +427,14 @@ impl From<RgbLibError> for APIError {
             RgbLibError::OutputBelowDustLimit => APIError::OutputBelowDustLimit,
             RgbLibError::Proxy { details } => APIError::Network(format!("proxy err: {details}")),
             RgbLibError::RecipientIDAlreadyUsed => APIError::RecipientIDAlreadyUsed,
+            RgbLibError::TooHighInflationAmounts => {
+                APIError::InvalidAmount(s!("inflation amount exceeds the max possible supply"))
+            }
             RgbLibError::TooHighIssuanceAmounts => {
                 APIError::InvalidAmount(s!("trying to issue too many assets"))
+            }
+            RgbLibError::UnsupportedInflation { asset_schema } => {
+                APIError::UnsupportedInflation(format!("{asset_schema}"))
             }
             RgbLibError::UnsupportedLayer1 { layer_1 } => APIError::UnsupportedLayer1(layer_1),
             RgbLibError::UnsupportedTransportType => APIError::UnsupportedTransportType,
@@ -406,24 +446,24 @@ impl From<RgbLibError> for APIError {
     }
 }
 
-impl IntoResponse for APIError {
-    fn into_response(self) -> Response {
-        let (status, error, name) = match self {
+impl APIError {
+    fn status_code(&self) -> StatusCode {
+        match self {
             APIError::FailedClosingChannel(_)
             | APIError::FailedInvoiceCreation(_)
             | APIError::FailedIssuingAsset(_)
-            | APIError::FailedKeysCreation(_, _)
             | APIError::FailedOpenChannel(_)
             | APIError::FailedPayment(_)
             | APIError::FailedPeerDisconnection(_)
             | APIError::FailedSendingOnionMessage(_)
             | APIError::IO(_)
-            | APIError::Unexpected(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                self.to_string(),
-                self.name(),
-            ),
+            | APIError::Unexpected(_) => StatusCode::INTERNAL_SERVER_ERROR,
             APIError::AnchorsRequired
+            | APIError::CannotProvideOutOfBandAck(_)
+            | APIError::CannotProvideOutOfBandConsignment(_)
+            | APIError::ConsignmentFileEmpty
+            | APIError::ConsignmentFileNotProvided
+            | APIError::ConsignmentNotFound
             | APIError::ExpiredSwapOffer
             | APIError::IncompleteRGBInfo
             | APIError::InvalidAddress(_)
@@ -436,8 +476,10 @@ impl IntoResponse for APIError {
             | APIError::InvalidBackupPath
             | APIError::InvalidBiscuitToken
             | APIError::InvalidChannelID
+            | APIError::InvalidConsignment
             | APIError::InvalidDetails(_)
             | APIError::InvalidEstimationBlocks
+            | APIError::InvalidExpiration
             | APIError::InvalidFeeRate(_)
             | APIError::InvalidInvoice(_)
             | APIError::InvalidMediaDigest
@@ -453,6 +495,7 @@ impl IntoResponse for APIError {
             | APIError::InvalidPubkey
             | APIError::InvalidRecipientData(_)
             | APIError::InvalidRecipientID
+            | APIError::InvalidRecipientMap
             | APIError::InvalidRecipientNetwork
             | APIError::InvalidRequest(_)
             | APIError::InvalidSwap(_)
@@ -465,10 +508,8 @@ impl IntoResponse for APIError {
             | APIError::MediaFileNotProvided
             | APIError::MissingSwapPaymentPreimage
             | APIError::OutputBelowDustLimit
-            | APIError::UnsupportedBackupVersion { .. } => {
-                (StatusCode::BAD_REQUEST, self.to_string(), self.name())
-            }
-            APIError::WrongPassword => (StatusCode::UNAUTHORIZED, self.to_string(), self.name()),
+            | APIError::UnsupportedBackupVersion { .. } => StatusCode::BAD_REQUEST,
+            APIError::WrongPassword => StatusCode::UNAUTHORIZED,
             APIError::AllocationsAlreadyAvailable
             | APIError::AlreadyInitialized
             | APIError::AlreadyUnlocked
@@ -487,7 +528,6 @@ impl IntoResponse for APIError {
             | APIError::InsufficientCapacity(_)
             | APIError::InsufficientFunds(_)
             | APIError::InvalidIndexer(_)
-            | APIError::InvalidProxyEndpoint
             | APIError::InvalidProxyProtocol(_)
             | APIError::LockedNode
             | APIError::MaxFeeExceeded(_)
@@ -496,7 +536,6 @@ impl IntoResponse for APIError {
             | APIError::NoAvailableUtxos
             | APIError::NoRoute
             | APIError::NotInitialized
-            | APIError::OpenChannelInProgress
             | APIError::PaymentNotFound(_)
             | APIError::RecipientIDAlreadyUsed
             | APIError::SwapNotFound(_)
@@ -506,29 +545,29 @@ impl IntoResponse for APIError {
             | APIError::UnknownLNInvoice
             | APIError::UnknownTemporaryChannelId
             | APIError::UnlockedNode
+            | APIError::UnsupportedInflation(_)
             | APIError::UnsupportedLayer1(_)
-            | APIError::UnsupportedTransportType => {
-                (StatusCode::FORBIDDEN, self.to_string(), self.name())
+            | APIError::UnsupportedTransportType => StatusCode::FORBIDDEN,
+            APIError::Network(_) | APIError::NoValidTransportEndpoint => {
+                StatusCode::SERVICE_UNAVAILABLE
             }
-            APIError::Network(_) | APIError::NoValidTransportEndpoint => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                self.to_string(),
-                self.name(),
-            ),
-        };
+        }
+    }
+}
 
-        let error = error.replace("\n", " ");
+impl IntoResponse for APIError {
+    fn into_response(self) -> Response {
+        let status = self.status_code();
+        let error = self.to_string().replace("\n", " ");
+        let name = self.name();
 
         tracing::error!("APIError: {error}");
 
-        let body = Json(
-            serde_json::to_value(APIErrorResponse {
-                error,
-                code: status.as_u16(),
-                name,
-            })
-            .unwrap(),
-        );
+        let body = Json(APIErrorResponse {
+            error,
+            code: status.as_u16(),
+            name,
+        });
 
         (status, body).into_response()
     }
@@ -539,9 +578,6 @@ impl IntoResponse for APIError {
 pub enum AppError {
     #[error("The provided authentication args are invalid")]
     InvalidAuthenticationArgs,
-
-    #[error("The revoked tokens file contains an invalid entry")]
-    InvalidRevokedTokensFile,
 
     #[error("The provided root public key is invalid")]
     InvalidRootKey,

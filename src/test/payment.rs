@@ -64,10 +64,24 @@ async fn success() {
     assert_eq!(payment.asset_id, Some(asset_id.clone()));
     assert_eq!(payment.asset_amount, asset_amount);
     assert_eq!(payment.status, HTLCStatus::Succeeded);
+    check_preimage_matches_hash(&payment, &decoded.payment_hash);
     let payment = get_payment(node2_addr, &decoded.payment_hash).await;
     assert_eq!(payment.asset_id, Some(asset_id.clone()));
     assert_eq!(payment.asset_amount, asset_amount);
     assert_eq!(payment.status, HTLCStatus::Succeeded);
+    check_preimage_matches_hash(&payment, &decoded.payment_hash);
+    let payment = list_payments(node1_addr)
+        .await
+        .into_iter()
+        .find(|payment| payment.payment_hash == decoded.payment_hash)
+        .unwrap();
+    check_preimage_matches_hash(&payment, &decoded.payment_hash);
+    let payment = list_payments(node2_addr)
+        .await
+        .into_iter()
+        .find(|payment| payment.payment_hash == decoded.payment_hash)
+        .unwrap();
+    check_preimage_matches_hash(&payment, &decoded.payment_hash);
 
     let asset_amount = Some(50);
     let LNInvoiceResponse { invoice } =
@@ -86,10 +100,12 @@ async fn success() {
     assert_eq!(payment.asset_id, Some(asset_id.clone()));
     assert_eq!(payment.asset_amount, asset_amount);
     assert_eq!(payment.status, HTLCStatus::Succeeded);
+    check_preimage_matches_hash(&payment, &decoded.payment_hash);
     let payment = get_payment(node2_addr, &decoded.payment_hash).await;
     assert_eq!(payment.asset_id, Some(asset_id.clone()));
     assert_eq!(payment.asset_amount, asset_amount);
     assert_eq!(payment.status, HTLCStatus::Succeeded);
+    check_preimage_matches_hash(&payment, &decoded.payment_hash);
 
     let LNInvoiceResponse { invoice } =
         ln_invoice(node2_addr, None, Some(&asset_id), asset_amount, 900).await;
@@ -100,10 +116,12 @@ async fn success() {
     assert_eq!(payment.asset_id, Some(asset_id.clone()));
     assert_eq!(payment.asset_amount, asset_amount);
     assert_eq!(payment.status, HTLCStatus::Succeeded);
+    check_preimage_matches_hash(&payment, &decoded.payment_hash);
     let payment = get_payment(node2_addr, &decoded.payment_hash).await;
     assert_eq!(payment.asset_id, Some(asset_id.clone()));
     assert_eq!(payment.asset_amount, asset_amount);
     assert_eq!(payment.status, HTLCStatus::Succeeded);
+    check_preimage_matches_hash(&payment, &decoded.payment_hash);
 
     let LNInvoiceResponse { invoice } =
         ln_invoice(node1_addr, None, Some(&asset_id), asset_amount, 900).await;
@@ -114,10 +132,12 @@ async fn success() {
     assert_eq!(payment.asset_id, Some(asset_id.clone()));
     assert_eq!(payment.asset_amount, asset_amount);
     assert_eq!(payment.status, HTLCStatus::Succeeded);
+    check_preimage_matches_hash(&payment, &decoded.payment_hash);
     let payment = get_payment(node2_addr, &decoded.payment_hash).await;
     assert_eq!(payment.asset_id, Some(asset_id.clone()));
     assert_eq!(payment.asset_amount, asset_amount);
     assert_eq!(payment.status, HTLCStatus::Succeeded);
+    check_preimage_matches_hash(&payment, &decoded.payment_hash);
 
     let channels_1 = list_channels(node1_addr).await;
     let channels_2 = list_channels(node2_addr).await;
@@ -171,7 +191,7 @@ async fn success() {
         .unwrap();
     let tx_utxos = transactions.iter().find(|t| t.sent == 100000000).unwrap();
     let tx_send = transactions.iter().find(|t| t.sent == 128000).unwrap();
-    assert_eq!(tx_user.transaction_type, TransactionType::User);
+    assert_eq!(tx_user.transaction_type, TransactionType::Incoming);
     assert_eq!(tx_utxos.transaction_type, TransactionType::CreateUtxos);
     assert_eq!(tx_send.transaction_type, TransactionType::RgbSend);
     assert!(tx_utxos.confirmation_time.is_some());
@@ -185,7 +205,7 @@ async fn success() {
     assert!(xfer_1.recipient_id.is_none());
     assert!(xfer_1.receive_utxo.is_none());
     assert!(xfer_1.change_utxo.is_none());
-    assert!(xfer_1.expiration.is_none());
+    assert!(xfer_1.expiration_timestamp.is_none());
     assert!(xfer_1.transport_endpoints.is_empty());
     let xfer_2 = transfers.iter().find(|t| t.idx == 2).unwrap();
     assert_eq!(xfer_2.status, TransferStatus::Settled);
@@ -196,8 +216,9 @@ async fn success() {
     assert!(xfer_2.recipient_id.is_some());
     assert!(xfer_2.receive_utxo.is_none());
     assert!(xfer_2.change_utxo.is_some());
-    assert!(xfer_2.expiration.is_some());
-    assert!(!xfer_2.transport_endpoints.is_empty());
+    assert!(xfer_2.expiration_timestamp.is_some());
+    // the channel funding consignment travels over the p2p link, so no proxy is involved
+    assert!(xfer_2.transport_endpoints.is_empty());
     let xfer_3 = transfers.iter().find(|t| t.idx == 3).unwrap();
     assert_eq!(xfer_3.status, TransferStatus::Settled);
     assert_eq!(xfer_3.kind, TransferKind::ReceiveWitness);
@@ -206,8 +227,8 @@ async fn success() {
     assert!(xfer_3.recipient_id.is_some());
     assert!(xfer_3.receive_utxo.is_some());
     assert!(xfer_3.change_utxo.is_none());
-    assert!(xfer_3.expiration.is_some());
-    assert!(!xfer_3.transport_endpoints.is_empty());
+    assert!(xfer_3.expiration_timestamp.is_some());
+    assert!(xfer_3.transport_endpoints.is_empty());
 }
 
 #[serial_test::serial]
